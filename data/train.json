@@ -1,0 +1,128 @@
+{
+  "repo": "https://github.com/garrettladley/generate_coding_challenge_server/tree/58278a3ef2f507b3c1146ff35f9fd1244b07f827",
+  "examples": [
+    {
+      "query": "how is the database connection established?",
+      "narrative": "this query is seeking to understand how the database connection is established during the startup of the application. the query is looking for snippets related to the startup of the application, reading configuration files, and connecting to the database.",
+      "results": [
+        {
+          "path": "./src/configuration.rs",
+          "content": "impl DatabaseSettings { pub fn without_db(&self) -> PgConnectOptions { let ssl_mode = if self.require_ssl { PgSslMode::Require } else { PgSslMode::Prefer }; PgConnectOptions::new() .host(&self.host) .username(&self.username) .password(self.password.expose_secret()) .port(self.port) .ssl_mode(ssl_mode) } pub fn with_db(&self) -> PgConnectOptions { self.without_db() .database(&self.database_name) .log_statements(tracing::log::LevelFilter::Trace) } }",
+          "relevant": true
+        },
+        {
+          "path": "./src/configuration.rs",
+          "content": "#[derive(serde::Deserialize, Clone, Debug)] pub struct DatabaseSettings { pub username: String, pub password: Secret<String>, #[serde(deserialize_with = \"deserialize_number_from_string\")] pub port: u16, pub host: String, pub database_name: String, pub require_ssl: bool, }",
+          "relevant": true
+        },
+        {
+          "path": "./src/configuration.rs",
+          "content": "pub fn get_configuration() -> Result<Settings, config::ConfigError> { let base_path = std::env::current_dir().expect(\"Failed to determine the current directory\"); let configuration_directory = base_path.join(\"configuration\"); let environment: Environment = std::env::var(\"APP_ENVIRONMENT\") .unwrap_or_else(|_| \"local\".into()) .try_into() .expect(\"Failed to parse APP_ENVIRONMENT.\"); let environment_filename = format!(\"{}.yaml\", environment.as_str()); let settings = config::Config::builder() .add_source(config::File::from( configuration_directory.join(\"base.yaml\"), )) .add_source(config::File::from( configuration_directory.join(environment_filename), )) .add_source( config::Environment::with_prefix(\"APP\") .prefix_separator(\"_\") .separator(\"__\"), ) .build()?; settings.try_deserialize::<Settings>() }",
+          "relevant": true
+        },
+        {
+          "path": "./src/main.rs",
+          "content": "let configuration = get_configuration().expect(\"Failed to read configuration.\"); let connection_pool = PgPoolOptions::new() .acquire_timeout(std::time::Duration::from_secs(2)) .connect_with(configuration.database.with_db()) .await .expect(\"Failed to connect to Postgres.\"); let address = format!( \"{}:{}\", configuration.application.host, configuration.application.port ); let listener = TcpListener::bind(address)?; run(listener, connection_pool)?.await?;",
+          "relevant": true
+        },
+        {
+          "path": "./src/startup.rs",
+          "content": "pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> { let db_pool = web::Data::new(db_pool); let server = HttpServer::new(move || { App::new() .wrap(TracingLogger::default()) .route(\"/health_check\", web::get().to(health_check)) .route(\"/register\", web::post().to(register)) .route(\"/forgot_token/{nuid}\", web::get().to(forgot_token)) .route(\"/challenge/{token}\", web::get().to(challenge)) .route(\"/submit/{token}\", web::post().to(submit)) .route(\"/applicants\", web::get().to(applicants)) .app_data(db_pool.clone())",
+          "relevant": true
+        },
+        {
+          "path": "./src/domain/mod.rs",
+          "content": "pub mod algo_question; mod applicant_name; mod color; mod nuid; mod register_applicant; mod submit_applicant; pub use algo_question::{generate_challenge, one_edit_away}; pub use applicant_name::ApplicantName; pub use color::Color; pub use nuid::Nuid; pub use register_applicant::RegisterApplicant; pub use submit_applicant::SubmitApplicant;",
+          "relevant": false
+        },
+        {
+          "path": "./.env",
+          "content": "DATABASE_URL=\"postgres://postgres:password@localhost:5432/challengeserver\"",
+          "relevant": true
+        },
+        {
+          "path": "./configuration/base.yaml",
+          "content": "database: host: \"127.0.0.1\" port: 5432 username: \"postgres\" password: \"password\" database_name: \"challengeserver\" require_ssl: false",
+          "relevant": true
+        },
+        {
+          "path": "./src/domain/color.rs",
+          "content": "use std::fmt::{Display, Formatter}; use std::str::FromStr; #[derive(strum::EnumIter, PartialEq, std::fmt::Debug, Clone, Copy)] pub enum Color { Red, Orange, Yellow, Green, Blue, Violet, } #[derive(thiserror::Error, serde::Serialize, serde::Deserialize, Debug)] pub enum ColorParseError { #[error(\"Invalid color\")] InvalidColor { given_color: String }, } impl FromStr for Color { type Err = ColorParseError; fn from_str(s: &str) -> Result<Self, Self::Err> { match s.to_lowercase().as_str() { \"red\" => Ok(Color::Red), \"orange\" => Ok(Color::Orange), \"yellow\" => Ok(Color::Yellow), \"green\" => Ok(Color::Green), \"blue\" => Ok(Color::Blue), \"violet\" => Ok(Color::Violet), _ => Err(ColorParseError::InvalidColor { given_color: s.to_string(), }), } } } impl Display for Color { fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { write!( f, \"{}\", match self { Color::Red => \"red\", Color::Orange => \"orange\", Color::Yellow => \"yellow\", Color::Green => \"green\", Color::Blue => \"blue\", Color::Violet => \"violet\", } ) } }",
+          "relevant": false
+        }
+      ]
+    },
+    {
+      "query": "where is the health check endpoint defined?",
+      "narrative": "this query is seeking to understand where the health check endpoint is defined. it is looking for snippets related to routing of the requests and the logic behind the endpoint. results might also include tests of this endpoint",
+      "results": [
+        {
+          "path": "./src/routes/health_check.rs",
+          "content": "pub async fn health_check() -> HttpResponse { HttpResponse::Ok().finish() }",
+          "relevant": true
+        },
+        {
+          "path": "./src/startup.rs",
+          "content": "let server = HttpServer::new(move || { App::new() .wrap(TracingLogger::default()) .route(\"/health_check\", web::get().to(health_check))",
+          "relevant": true
+        },
+        {
+          "path": "./tests/api/health_check.rs",
+          "content": "#[tokio::test] async fn health_check_works() { let app = spawn_app().await; let client = reqwest::Client::new(); let response = client .get(&format!(\"{}/health_check\", &app.address)) .send() .await .expect(\"Failed to execute request.\"); assert!(response.status().is_success()); assert_eq!(Some(0), response.content_length()); }",
+          "relevant": true
+        },
+        {
+          "path": "./.dockerignore",
+          "content": ".env .dockerignore spec.yaml target/ deploy/ tests/ Dockerfile scripts/ migrations/",
+          "relevant": false
+        },
+        {
+          "path": "./Dockerfile",
+          "content": "FROM lukemathwalker/cargo-chef:latest-rust-1.71.0 as chef WORKDIR /app RUN apt update && apt install lld clang -y FROM chef as planner COPY . . RUN cargo chef prepare --recipe-path recipe.json FROM chef as builder COPY --from=planner /app/recipe.json recipe.json RUN cargo chef cook --release --recipe-path recipe.json COPY . . ENV SQLX_OFFLINE true RUN cargo build --release --bin generate_coding_challenge_server FROM debian:bullseye-slim AS runtime WORKDIR /app RUN apt-get update -y  && apt-get install -y --no-install-recommends openssl ca-certificates  && apt-get autoremove -y  && apt-get clean -y  && rm -rf /var/lib/apt/lists/* COPY --from=builder /app/target/release/generate_coding_challenge_server generate_coding_challenge_server COPY configuration configuration ENV APP_ENVIRONMENT production ENTRYPOINT [\"./generate_coding_challenge_server\"]",
+          "relevant": false
+        },
+        {
+          "path": "./github/workflows/audit.yml",
+          "content": "name: Security audit on: schedule: - cron: '0 0 * * *' push: paths: - '**/Cargo.toml' - '**/Cargo.lock' jobs: security_audit: runs-on: ubuntu-latest steps: - uses: actions/checkout@v3 - uses: taiki-e/install-action@cargo-deny - name: Scan for vulnerabilities run: cargo deny check advisories",
+          "relevant": false
+        }
+      ]
+    },
+    {
+      "query": "what are the constraints on nu id values by type driven development",
+      "narrative": "this query is seeking to understand the constraints placed upon the Nuid struct. Type driven development is a technique that uses the type system to guide the development of the application. This query is looking for snippets related to the definition of the Nuid struct and the constraints placed upon it during creation of instances of this struct.",
+      "results": [
+        {
+          "path": "./src/routes/health_check.rs",
+          "content": "pub async fn health_check() -> HttpResponse { HttpResponse::Ok().finish() }",
+          "relevant": false
+        },
+        {
+          "path": "./src/domain/color.rs",
+          "content": "use std::fmt::{Display, Formatter}; use std::str::FromStr; #[derive(strum::EnumIter, PartialEq, std::fmt::Debug, Clone, Copy)] pub enum Color { Red, Orange, Yellow, Green, Blue, Violet, } #[derive(thiserror::Error, serde::Serialize, serde::Deserialize, Debug)] pub enum ColorParseError { #[error(\"Invalid color\")] InvalidColor { given_color: String }, } impl FromStr for Color { type Err = ColorParseError; fn from_str(s: &str) -> Result<Self, Self::Err> { match s.to_lowercase().as_str() { \"red\" => Ok(Color::Red), \"orange\" => Ok(Color::Orange), \"yellow\" => Ok(Color::Yellow), \"green\" => Ok(Color::Green), \"blue\" => Ok(Color::Blue), \"violet\" => Ok(Color::Violet), _ => Err(ColorParseError::InvalidColor { given_color: s.to_string(), }), } } } impl Display for Color { fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { write!( f, \"{}\", match self { Color::Red => \"red\", Color::Orange => \"orange\", Color::Yellow => \"yellow\", Color::Green => \"green\", Color::Blue => \"blue\", Color::Violet => \"violet\", } ) } }",
+          "relevant": false
+        },
+        {
+          "path": "./src/main.rs",
+          "content": "let configuration = get_configuration().expect(\"Failed to read configuration.\"); let connection_pool = PgPoolOptions::new() .acquire_timeout(std::time::Duration::from_secs(2)) .connect_with(configuration.database.with_db()) .await .expect(\"Failed to connect to Postgres.\"); let address = format!( \"{}:{}\", configuration.application.host, configuration.application.port ); let listener = TcpListener::bind(address)?; run(listener, connection_pool)?.await?;",
+          "relevant": false
+        },
+        {
+          "path": "./src/domain/nuid.rs",
+          "content": "impl Nuid { pub fn parse(s: String) -> Result<Nuid, String> { let is_empty_or_whitespace = s.trim().is_empty(); let is_too_long = s.graphemes(true).count() > 9; let all_integers = s.chars().all(|c| c.is_ascii_digit()); if is_empty_or_whitespace || is_too_long || !all_integers { Err(format!(\"Invalid NUID! Given: {}\", s)) } else { Ok(Self(s)) } } }",
+          "relevant": true
+        },
+        {
+          "path": "./src/domain/nuid.rs",
+          "content": "#[cfg(test)] mod tests { use crate::domain::Nuid; use claims::{assert_err, assert_ok}; #[test] fn a_9_grapheme_long_all_int_nuid_is_valid() { let nuid = \"1\".repeat(9); assert_ok!(Nuid::parse(nuid)); } #[test] fn whitespace_only_is_rejected() { let nuid = \" \".to_string(); assert_err!(Nuid::parse(nuid)); } #[test] fn empty_string_is_rejected() { let nuid = \"\".to_string(); assert_err!(Nuid::parse(nuid)); } #[test] fn a_10_grapheme_long_all_int_nuid_is_rejected() { let nuid = \"1\".repeat(10); assert_err!(Nuid::parse(nuid)); } #[test] fn a_9_grapheme_long_all_string_nuid_is_rejected() { let nuid = \"a\".repeat(9); assert_err!(Nuid::parse(nuid)); } #[test] fn a_9_grapheme_long_string_with_1_to_8_ints_is_rejected() { let characters = ['1', 'a']; for num_a in 1..=8 { let permutation = vec!['a'; num_a]; let permutation_string = permutation.iter().collect::<String>(); let full_string = format!(\"{}{}\", permutation_string, &\"11111111\"[..8 - num_a]); for i in 0..9 { for char in &characters { let mut test_string = full_string.clone(); test_string.insert(i, *char); assert_err!( Nuid::parse(test_string.clone()), \"The call to Nuid parse should have failed with the string: {}\", test_string ); } } } } }",
+          "relevant": true
+        },
+        {
+          "path": "./tests/api/register.rs",
+          "content": "#[tokio::test] async fn register_returns_a_400_when_fields_are_present_but_invalid() { let app = spawn_app().await; let client = reqwest::Client::new(); let test_cases = vec![ ( hashmap! { \"name\" => \"\", \"nuid\" => \"001234567\", }, \"Invalid name! Given: \", ), ( hashmap! { \"name\" => \"Garrett\", \"nuid\" => \"\", }, \"Invalid NUID! Given: \", ), ( hashmap! { \"name\" => \"\", \"nuid\" => \"\", }, \"Invalid name! Given: \", ), ]; for (invalid_body, error_message) in test_cases { let response = client .post(&format!(\"{}/register\", &app.address)) .json(&invalid_body) .send() .await .expect(\"Failed to execute request.\"); assert_eq!( 400, response.status().as_u16(), \"The API did not fail with 400 Bad Request when the payload was {}.\", error_message ); let expected: String = serde_json::from_str(&format!(\"\"{}\"\", error_message)).unwrap(); let actual: String = serde_json::from_str(response.text().await.unwrap().as_str()).unwrap(); assert_eq!(expected, actual); } }",
+          "relevant": true
+        }
+      ]
+    }
+  ]
+}
