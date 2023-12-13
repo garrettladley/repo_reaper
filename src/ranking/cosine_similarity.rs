@@ -11,6 +11,10 @@ pub struct CosineSimilarity;
 
 impl RankingAlgorithm for CosineSimilarity {
     fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
+        if query.0.is_empty() {
+            return None;
+        }
+
         let query_magnitude = query
             .0
             .par_iter()

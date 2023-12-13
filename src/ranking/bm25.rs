@@ -31,6 +31,10 @@ pub struct BM25 {
 
 impl RankingAlgorithm for BM25 {
     fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
+        if query.0.is_empty() {
+            return None;
+        }
+
         let avgdl = inverted_index.avg_doc_length();
         let scores = Arc::new(Mutex::new(HashMap::new()));
 

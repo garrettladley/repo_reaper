@@ -12,6 +12,10 @@ pub struct TFIDF;
 
 impl RankingAlgorithm for TFIDF {
     fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
+        if query.0.is_empty() {
+            return None;
+        }
+
         let scores = Arc::new(Mutex::new(HashMap::new()));
 
         query.0.par_iter().for_each(|term| {

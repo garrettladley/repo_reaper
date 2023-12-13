@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -10,10 +13,33 @@ use super::bm25::get_configuration;
 #[derive(Debug)]
 pub struct Ranking(pub Vec<Rank>);
 
+impl std::fmt::Display for Ranking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut output = String::new();
+
+        self.0.iter().for_each(|rank| {
+            output.push_str(&format!("{}\n", rank));
+        });
+
+        write!(f, "{}", output)
+    }
+}
+
 #[derive(Debug)]
 pub struct Rank {
     pub doc_path: PathBuf,
     pub score: f64,
+}
+
+impl std::fmt::Display for Rank {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Path: {} Score: {}",
+            self.doc_path.to_str().unwrap(),
+            self.score
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -40,7 +66,33 @@ impl RankingAlgorithm for RankingAlgos {
             RankingAlgos::TFIDF => Box::new(TFIDF),
         };
 
-        algo.rank(inverted_index, query, top_n)
+        let mut query_log = HashMap::new();
+
+        query_log.insert("query".to_string(), query.to_string());
+        query_log.insert("top_n".to_string(), top_n.to_string());
+
+        let ranking = algo.rank(inverted_index, query, top_n);
+
+        match &ranking {
+            Some(ranking) => {
+                query_log.insert("ranking".to_string(), format!("{:?}", ranking));
+            }
+            None => {
+                query_log.insert("ranking".to_string(), "".to_string());
+            }
+        }
+
+        let query_log = serde_json::to_string(&query_log).unwrap();
+
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open("./query_log.txt")
+            .unwrap();
+
+        file.write_all(query_log.as_bytes()).unwrap();
+
+        ranking
     }
 }
 

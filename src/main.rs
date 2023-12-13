@@ -155,19 +155,26 @@ fn evaluate_training(args: &Args, globals: &Globals) {
         .examples
         .par_iter()
         .map(|example| {
-            let relevant_docs = example
+            let mut relevant_docs: Vec<_> = example
                 .results
                 .iter()
-                .filter(|result| matches!(result.relevance, Relevance::Relevant(_)))
-                .map(|result| result.path.clone())
+                .filter_map(|result| match result.relevance {
+                    Relevance::Relevant(rank) => Some((result.path.clone(), rank)),
+                    Relevance::NonRelevant => None,
+                })
                 .collect();
+
+            relevant_docs.sort_by(|a, b| a.1.cmp(&b.1));
 
             TestQuery {
                 query: example.query.clone(),
-                relevant_docs,
+                relevant_docs: relevant_docs
+                    .par_iter()
+                    .map(|(path, _)| path.clone())
+                    .collect::<Vec<_>>(),
             }
         })
-        .collect::<Vec<TestQuery>>();
+        .collect();
 
     println!(
         "Evaluation: {:?}",

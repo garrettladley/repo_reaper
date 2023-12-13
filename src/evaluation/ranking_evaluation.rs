@@ -1,6 +1,6 @@
 use std::{default, path::PathBuf};
 
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use crate::{inverted_index::InvertedIndex, ranking::RankingAlgorithm, text_transform::Query};
 
@@ -19,6 +19,7 @@ pub struct Evaluation {
     pub precision: f64,
     pub recall: f64,
     pub f1_score: f64,
+    pub mrr: f64,
 }
 
 impl default::Default for Evaluation {
@@ -27,6 +28,7 @@ impl default::Default for Evaluation {
             precision: 0.0,
             recall: 0.0,
             f1_score: 0.0,
+            mrr: 0.0,
         }
     }
 }
@@ -63,16 +65,29 @@ impl TestSet {
                 } else {
                     0.0
                 };
+
+                let mrr = ranked_docs
+                    .par_iter()
+                    .enumerate()
+                    .filter(|(_, doc)| query.relevant_docs.contains(&doc.doc_path))
+                    .map(|(i, _)| 1.0 / (i + 1) as f64)
+                    .collect::<Vec<_>>()
+                    .first()
+                    .cloned()
+                    .unwrap_or(0.0);
+
                 Evaluation {
                     precision,
                     recall,
                     f1_score,
+                    mrr,
                 }
             })
             .reduce(Evaluation::default, |acc, evaluation| Evaluation {
                 precision: acc.precision + evaluation.precision,
                 recall: acc.recall + evaluation.recall,
                 f1_score: acc.f1_score + evaluation.f1_score,
+                mrr: acc.mrr + evaluation.mrr,
             })
     }
 }
