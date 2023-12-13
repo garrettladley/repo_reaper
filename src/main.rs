@@ -2,7 +2,7 @@ use repo_reaper::{
     config::get_configuration,
     inverted_index::InvertedIndex,
     ranking::{tf_idf::TFIDF, RankingAlgorithm},
-    text_transform::{transform, Query},
+    text_transform::{n_gram_transform, transform, Query},
 };
 use rust_stemmers::{Algorithm, Stemmer};
 
@@ -13,7 +13,11 @@ fn main() {
 
     println!("k1: {} b:{}", x.k1, x.b);
 
-    let inverted_index = InvertedIndex::new("./src/", |content: &str| transform(content, &stemmer));
+    let n = 2;
+
+    let inverted_index = InvertedIndex::new("./src/", |content: &str| {
+        n_gram_transform(content, &stemmer, n)
+    });
 
     let query = "utils";
 
@@ -21,7 +25,7 @@ fn main() {
 
     let top_n = 10;
 
-    for rank in algo.rank(&inverted_index, &Query::new(query, &stemmer), top_n) {
+    for rank in algo.rank(&inverted_index, &Query::new(query, &stemmer, n), top_n) {
         println!("{:?}", rank);
     }
 }
