@@ -8,7 +8,7 @@ use crate::inverted_index::InvertedIndex;
 use crate::ranking::{utils::idf, Rank, RankingAlgorithm};
 use crate::text_transform::Query;
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Debug, Clone)]
 pub struct BM25HyperParams {
     pub k1: f64,
     pub b: f64,

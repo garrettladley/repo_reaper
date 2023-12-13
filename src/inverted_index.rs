@@ -2,7 +2,7 @@ use rayon::iter::{
     IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -24,7 +24,7 @@ impl InvertedIndex {
     pub fn new<P, F>(root: P, transform_fn: F) -> Self
     where
         P: Into<PathBuf>,
-        F: Fn(&str) -> Vec<Term> + Sync,
+        F: Fn(&str) -> HashSet<Term> + Sync,
     {
         let index = Arc::new(Mutex::new(HashMap::new()));
         let root_path: PathBuf = root.into();
@@ -56,7 +56,7 @@ impl InvertedIndex {
         content: &str,
         transform_fn: &F,
     ) where
-        F: Fn(&str) -> Vec<Term> + Sync,
+        F: Fn(&str) -> HashSet<Term> + Sync,
     {
         let terms = transform_fn(content);
         transform_fn(content).extend(transform_fn(entry_path.to_str().unwrap()));
@@ -100,5 +100,31 @@ impl InvertedIndex {
 
     pub fn doc_freq(&self, term: &Term) -> usize {
         self.0.get(term).map_or(0, |documents| documents.len())
+    }
+
+    pub fn update<F>(&mut self, path: &PathBuf, transform_fn: &F)
+    where
+        F: Fn(&str) -> HashSet<Term> + Sync,
+    {
+        if let Ok(content) = Self::read_document(path) {
+            let index = Arc::new(Mutex::new(HashMap::new()));
+            let index_clone = Arc::clone(&index);
+
+            Self::process_document(&index_clone, path, &content, transform_fn);
+
+            let mut index_lock = index.lock().unwrap();
+
+            for (term, term_document) in index_lock.drain() {
+                self.0
+                    .entry(term)
+                    .or_default()
+                    .entry(path.clone())
+                    .or_insert_with(|| TermDocument {
+                        length: term_document.get(path).unwrap().length,
+                        term_freq: 0,
+                    })
+                    .term_freq += term_document.get(path).unwrap().term_freq;
+            }
+        }
     }
 }
