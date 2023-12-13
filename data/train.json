@@ -1,59 +1,60 @@
 {
-  "repo": "https://github.com/garrettladley/generate_coding_challenge_server/tree/58278a3ef2f507b3c1146ff35f9fd1244b07f827",
+  "repo": "https://github.com/garrettladley/generate_coding_challenge_server.git",
+  "commit": "58278a3ef2f507b3c1146ff35f9fd1244b07f827",
   "examples": [
     {
       "query": "how is the database connection established?",
       "narrative": "this query is seeking to understand how the database connection is established during the startup of the application. the query is looking for snippets related to the startup of the application, reading configuration files, and connecting to the database.",
       "results": [
         {
-          "path": "./src/configuration.rs",
+          "path": "src/configuration.rs",
           "content": "impl DatabaseSettings { pub fn without_db(&self) -> PgConnectOptions { let ssl_mode = if self.require_ssl { PgSslMode::Require } else { PgSslMode::Prefer }; PgConnectOptions::new() .host(&self.host) .username(&self.username) .password(self.password.expose_secret()) .port(self.port) .ssl_mode(ssl_mode) } pub fn with_db(&self) -> PgConnectOptions { self.without_db() .database(&self.database_name) .log_statements(tracing::log::LevelFilter::Trace) } }",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/configuration.rs",
+          "path": "src/configuration.rs",
           "content": "#[derive(serde::Deserialize, Clone, Debug)] pub struct DatabaseSettings { pub username: String, pub password: Secret<String>, #[serde(deserialize_with = \"deserialize_number_from_string\")] pub port: u16, pub host: String, pub database_name: String, pub require_ssl: bool, }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./src/configuration.rs",
+          "path": "src/configuration.rs",
           "content": "pub fn get_configuration() -> Result<Settings, config::ConfigError> { let base_path = std::env::current_dir().expect(\"Failed to determine the current directory\"); let configuration_directory = base_path.join(\"configuration\"); let environment: Environment = std::env::var(\"APP_ENVIRONMENT\") .unwrap_or_else(|_| \"local\".into()) .try_into() .expect(\"Failed to parse APP_ENVIRONMENT.\"); let environment_filename = format!(\"{}.yaml\", environment.as_str()); let settings = config::Config::builder() .add_source(config::File::from( configuration_directory.join(\"base.yaml\"), )) .add_source(config::File::from( configuration_directory.join(environment_filename), )) .add_source( config::Environment::with_prefix(\"APP\") .prefix_separator(\"_\") .separator(\"__\"), ) .build()?; settings.try_deserialize::<Settings>() }",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./src/main.rs",
+          "path": "src/main.rs",
           "content": "let configuration = get_configuration().expect(\"Failed to read configuration.\"); let connection_pool = PgPoolOptions::new() .acquire_timeout(std::time::Duration::from_secs(2)) .connect_with(configuration.database.with_db()) .await .expect(\"Failed to connect to Postgres.\"); let address = format!( \"{}:{}\", configuration.application.host, configuration.application.port ); let listener = TcpListener::bind(address)?; run(listener, connection_pool)?.await?;",
           "relevant": true,
           "rank": 4
         },
         {
-          "path": "./src/startup.rs",
+          "path": "src/startup.rs",
           "content": "pub fn run(listener: TcpListener, db_pool: PgPool) -> Result<Server, std::io::Error> { let db_pool = web::Data::new(db_pool); let server = HttpServer::new(move || { App::new() .wrap(TracingLogger::default()) .route(\"/health_check\", web::get().to(health_check)) .route(\"/register\", web::post().to(register)) .route(\"/forgot_token/{nuid}\", web::get().to(forgot_token)) .route(\"/challenge/{token}\", web::get().to(challenge)) .route(\"/submit/{token}\", web::post().to(submit)) .route(\"/applicants\", web::get().to(applicants)) .app_data(db_pool.clone())",
           "relevant": true,
           "rank": 5
         },
         {
-          "path": "./src/domain/mod.rs",
+          "path": "src/domain/mod.rs",
           "content": "pub mod algo_question; mod applicant_name; mod color; mod nuid; mod register_applicant; mod submit_applicant; pub use algo_question::{generate_challenge, one_edit_away}; pub use applicant_name::ApplicantName; pub use color::Color; pub use nuid::Nuid; pub use register_applicant::RegisterApplicant; pub use submit_applicant::SubmitApplicant;",
           "relevant": false
         },
         {
-          "path": "./.env",
+          "path": ".env",
           "content": "DATABASE_URL=\"postgres://postgres:password@localhost:5432/challengeserver\"",
           "relevant": true,
           "rank": 6
         },
         {
-          "path": "./configuration/base.yaml",
+          "path": "configuration/base.yaml",
           "content": "database: host: \"127.0.0.1\" port: 5432 username: \"postgres\" password: \"password\" database_name: \"challengeserver\" require_ssl: false",
           "relevant": true,
           "rank": 7
         },
         {
-          "path": "./src/domain/color.rs",
+          "path": "src/domain/color.rs",
           "content": "use std::fmt::{Display, Formatter}; use std::str::FromStr; #[derive(strum::EnumIter, PartialEq, std::fmt::Debug, Clone, Copy)] pub enum Color { Red, Orange, Yellow, Green, Blue, Violet, } #[derive(thiserror::Error, serde::Serialize, serde::Deserialize, Debug)] pub enum ColorParseError { #[error(\"Invalid color\")] InvalidColor { given_color: String }, } impl FromStr for Color { type Err = ColorParseError; fn from_str(s: &str) -> Result<Self, Self::Err> { match s.to_lowercase().as_str() { \"red\" => Ok(Color::Red), \"orange\" => Ok(Color::Orange), \"yellow\" => Ok(Color::Yellow), \"green\" => Ok(Color::Green), \"blue\" => Ok(Color::Blue), \"violet\" => Ok(Color::Violet), _ => Err(ColorParseError::InvalidColor { given_color: s.to_string(), }), } } } impl Display for Color { fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { write!( f, \"{}\", match self { Color::Red => \"red\", Color::Orange => \"orange\", Color::Yellow => \"yellow\", Color::Green => \"green\", Color::Blue => \"blue\", Color::Violet => \"violet\", } ) } }",
           "relevant": false
         }
@@ -64,35 +65,35 @@
       "narrative": "this query is seeking to understand where the health check endpoint is defined. it is looking for snippets related to routing of the requests and the logic behind the endpoint. results might also include tests of this endpoint",
       "results": [
         {
-          "path": "./src/routes/health_check.rs",
+          "path": "src/routes/health_check.rs",
           "content": "pub async fn health_check() -> HttpResponse { HttpResponse::Ok().finish() }",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/startup.rs",
+          "path": "src/startup.rs",
           "content": "let server = HttpServer::new(move || { App::new() .wrap(TracingLogger::default()) .route(\"/health_check\", web::get().to(health_check))",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./tests/api/health_check.rs",
+          "path": "tests/api/health_check.rs",
           "content": "#[tokio::test] async fn health_check_works() { let app = spawn_app().await; let client = reqwest::Client::new(); let response = client .get(&format!(\"{}/health_check\", &app.address)) .send() .await .expect(\"Failed to execute request.\"); assert!(response.status().is_success()); assert_eq!(Some(0), response.content_length()); }",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./.dockerignore",
+          "path": ".dockerignore",
           "content": ".env .dockerignore spec.yaml target/ deploy/ tests/ Dockerfile scripts/ migrations/",
           "relevant": false
         },
         {
-          "path": "./Dockerfile",
+          "path": "Dockerfile",
           "content": "FROM lukemathwalker/cargo-chef:latest-rust-1.71.0 as chef WORKDIR /app RUN apt update && apt install lld clang -y FROM chef as planner COPY . . RUN cargo chef prepare --recipe-path recipe.json FROM chef as builder COPY --from=planner /app/recipe.json recipe.json RUN cargo chef cook --release --recipe-path recipe.json COPY . . ENV SQLX_OFFLINE true RUN cargo build --release --bin generate_coding_challenge_server FROM debian:bullseye-slim AS runtime WORKDIR /app RUN apt-get update -y  && apt-get install -y --no-install-recommends openssl ca-certificates  && apt-get autoremove -y  && apt-get clean -y  && rm -rf /var/lib/apt/lists/* COPY --from=builder /app/target/release/generate_coding_challenge_server generate_coding_challenge_server COPY configuration configuration ENV APP_ENVIRONMENT production ENTRYPOINT [\"./generate_coding_challenge_server\"]",
           "relevant": false
         },
         {
-          "path": "./.github/workflows/audit.yml",
+          "path": ".github/workflows/audit.yml",
           "content": "name: Security audit on: schedule: - cron: '0 0 * * *' push: paths: - '**/Cargo.toml' - '**/Cargo.lock' jobs: security_audit: runs-on: ubuntu-latest steps: - uses: actions/checkout@v3 - uses: taiki-e/install-action@cargo-deny - name: Scan for vulnerabilities run: cargo deny check advisories",
           "relevant": false
         }
@@ -103,34 +104,34 @@
       "narrative": "this query is seeking to understand the constraints placed upon the Nuid struct. Type driven development is a technique that uses the type system to guide the development of the application. This query is looking for snippets related to the definition of the Nuid struct and the constraints placed upon it during creation of instances of this struct.",
       "results": [
         {
-          "path": "./src/routes/health_check.rs",
+          "path": "src/routes/health_check.rs",
           "content": "pub async fn health_check() -> HttpResponse { HttpResponse::Ok().finish() }",
           "relevant": false
         },
         {
-          "path": "./src/domain/color.rs",
+          "path": "src/domain/color.rs",
           "content": "use std::fmt::{Display, Formatter}; use std::str::FromStr; #[derive(strum::EnumIter, PartialEq, std::fmt::Debug, Clone, Copy)] pub enum Color { Red, Orange, Yellow, Green, Blue, Violet, } #[derive(thiserror::Error, serde::Serialize, serde::Deserialize, Debug)] pub enum ColorParseError { #[error(\"Invalid color\")] InvalidColor { given_color: String }, } impl FromStr for Color { type Err = ColorParseError; fn from_str(s: &str) -> Result<Self, Self::Err> { match s.to_lowercase().as_str() { \"red\" => Ok(Color::Red), \"orange\" => Ok(Color::Orange), \"yellow\" => Ok(Color::Yellow), \"green\" => Ok(Color::Green), \"blue\" => Ok(Color::Blue), \"violet\" => Ok(Color::Violet), _ => Err(ColorParseError::InvalidColor { given_color: s.to_string(), }), } } } impl Display for Color { fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result { write!( f, \"{}\", match self { Color::Red => \"red\", Color::Orange => \"orange\", Color::Yellow => \"yellow\", Color::Green => \"green\", Color::Blue => \"blue\", Color::Violet => \"violet\", } ) } }",
           "relevant": false
         },
         {
-          "path": "./src/main.rs",
+          "path": "src/main.rs",
           "content": "let configuration = get_configuration().expect(\"Failed to read configuration.\"); let connection_pool = PgPoolOptions::new() .acquire_timeout(std::time::Duration::from_secs(2)) .connect_with(configuration.database.with_db()) .await .expect(\"Failed to connect to Postgres.\"); let address = format!( \"{}:{}\", configuration.application.host, configuration.application.port ); let listener = TcpListener::bind(address)?; run(listener, connection_pool)?.await?;",
           "relevant": false
         },
         {
-          "path": "./src/domain/nuid.rs",
+          "path": "src/domain/nuid.rs",
           "content": "impl Nuid { pub fn parse(s: String) -> Result<Nuid, String> { let is_empty_or_whitespace = s.trim().is_empty(); let is_too_long = s.graphemes(true).count() > 9; let all_integers = s.chars().all(|c| c.is_ascii_digit()); if is_empty_or_whitespace || is_too_long || !all_integers { Err(format!(\"Invalid NUID! Given: {}\", s)) } else { Ok(Self(s)) } } }",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/domain/nuid.rs",
+          "path": "src/domain/nuid.rs",
           "content": "#[cfg(test)] mod tests { use crate::domain::Nuid; use claims::{assert_err, assert_ok}; #[test] fn a_9_grapheme_long_all_int_nuid_is_valid() { let nuid = \"1\".repeat(9); assert_ok!(Nuid::parse(nuid)); } #[test] fn whitespace_only_is_rejected() { let nuid = \" \".to_string(); assert_err!(Nuid::parse(nuid)); } #[test] fn empty_string_is_rejected() { let nuid = \"\".to_string(); assert_err!(Nuid::parse(nuid)); } #[test] fn a_10_grapheme_long_all_int_nuid_is_rejected() { let nuid = \"1\".repeat(10); assert_err!(Nuid::parse(nuid)); } #[test] fn a_9_grapheme_long_all_string_nuid_is_rejected() { let nuid = \"a\".repeat(9); assert_err!(Nuid::parse(nuid)); } #[test] fn a_9_grapheme_long_string_with_1_to_8_ints_is_rejected() { let characters = ['1', 'a']; for num_a in 1..=8 { let permutation = vec!['a'; num_a]; let permutation_string = permutation.iter().collect::<String>(); let full_string = format!(\"{}{}\", permutation_string, &\"11111111\"[..8 - num_a]); for i in 0..9 { for char in &characters { let mut test_string = full_string.clone(); test_string.insert(i, *char); assert_err!( Nuid::parse(test_string.clone()), \"The call to Nuid parse should have failed with the string: {}\", test_string ); } } } } }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./tests/api/register.rs",
+          "path": "tests/api/register.rs",
           "content": "#[tokio::test] async fn register_returns_a_400_when_fields_are_present_but_invalid() { let app = spawn_app().await; let client = reqwest::Client::new(); let test_cases = vec![ ( hashmap! { \"name\" => \"\", \"nuid\" => \"001234567\", }, \"Invalid name! Given: \", ), ( hashmap! { \"name\" => \"Garrett\", \"nuid\" => \"\", }, \"Invalid NUID! Given: \", ), ( hashmap! { \"name\" => \"\", \"nuid\" => \"\", }, \"Invalid name! Given: \", ), ]; for (invalid_body, error_message) in test_cases { let response = client .post(&format!(\"{}/register\", &app.address)) .json(&invalid_body) .send() .await .expect(\"Failed to execute request.\"); assert_eq!( 400, response.status().as_u16(), \"The API did not fail with 400 Bad Request when the payload was {}.\", error_message ); let expected: String = serde_json::from_str(&format!(\"\"{}\"\", error_message)).unwrap(); let actual: String = serde_json::from_str(response.text().await.unwrap().as_str()).unwrap(); assert_eq!(expected, actual); } }",
           "relevant": true,
           "rank": 3
@@ -142,42 +143,42 @@
       "narrative": "in this query the user is likely facing issues with the CI/CD pipeline. short snippets will likely be hard to provide for this query as the CI/CD pipeline is likely to be spread across multiple files. the user is likely looking for the configuration of the CI/CD pipeline and the steps that are executed during the pipeline.",
       "results": [
         {
-          "path": "./.github/workflows/audit.yml",
+          "path": ".github/workflows/audit.yml",
           "content": "name: Security audit on: schedule: - cron: '0 0 * * *' push: paths: - '**/Cargo.toml' - '**/Cargo.lock' jobs: security_audit: runs-on: ubuntu-latest steps: - uses: actions/checkout@v3 - uses: taiki-e/install-action@cargo-deny - name: Scan for vulnerabilities run: cargo deny check advisories",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./.github/workflows/general.yml",
+          "path": ".github/workflows/general.yml",
           "content": "name: Rust on: push: branches: - main pull_request: branches: - main env: CARGO_TERM_COLOR: always SQLX_VERSION: 0.7.1 SQLX_FEATURES: \"rustls,postgres\" jobs: test: name: Test runs-on: ubuntu-latest services: postgres: image: postgres:14 env: POSTGRES_USER: postgres POSTGRES_PASSWORD: password POSTGRES_DB: postgres ports: - 5432:5432 steps: - uses: actions/checkout@v3 - uses: dtolnay/rust-toolchain@stable - uses: Swatinem/rust-cache@v2 with: key: sqlx-${{ env.SQLX_VERSION }} - name: Install sqlx-cli run: cargo install sqlx-cli --version=${{ env.SQLX_VERSION }} --features ${{ env.SQLX_FEATURES }} --no-default-features --locked - name: Migrate database run: | sudo apt-get install libpq-dev -y SKIP_DOCKER=true ./scripts/init_db.sh - name: Check sqlx-data.json is up-to-date run: | cargo sqlx prepare --check -- --bin generate_coding_challenge_server - name: Run tests run: cargo test fmt: name: Rustfmt runs-on: ubuntu-latest steps: - uses: actions/checkout@v3 - uses: dtolnay/rust-toolchain@stable with: components: rustfmt - name: Enforce formatting run: cargo fmt --check clippy: name: Clippy runs-on: ubuntu-latest services: postgres: image: postgres:15 env: POSTGRES_USER: postgres POSTGRES_PASSWORD: password POSTGRES_DB: postgres ports: - 5432:5432 steps: - uses: actions/checkout@v3 - uses: dtolnay/rust-toolchain@stable with: components: clippy - uses: Swatinem/rust-cache@v2 with: key: sqlx-${{ env.SQLX_VERSION }} - name: Install sqlx-cli run: cargo install sqlx-cli --version=${{ env.SQLX_VERSION }} --features ${{ env.SQLX_FEATURES }} --no-default-features --locked - name: Migrate database run: | sudo apt-get install libpq-dev -y SKIP_DOCKER=true ./scripts/init_db.sh - name: Linting run: cargo clippy -- -D warnings coverage: name: Code coverage runs-on: ubuntu-latest services: postgres: image: postgres:14 env: POSTGRES_USER: postgres POSTGRES_PASSWORD: password POSTGRES_DB: postgres ports: - 5432:5432 steps: - name: Checkout repository uses: actions/checkout@v3 - uses: dtolnay/rust-toolchain@stable - name: Install libpq run: sudo apt-get update && sudo apt-get install postgresql-client -y - uses: Swatinem/rust-cache@v2 with: key: sqlx-${{ env.SQLX_VERSION }} - name: Install tarpaulin run: cargo install cargo-tarpaulin - name: Install sqlx-cli run: cargo install sqlx-cli --version=${{ env.SQLX_VERSION }} --features ${{ env.SQLX_FEATURES }} --no-default-features --locked - name: Migrate database run: SKIP_DOCKER=true ./scripts/init_db.sh - name: Generate code coverage run: cargo tarpaulin --verbose --workspace",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./spec.yaml",
+          "path": "spec.yaml",
           "content": "name: generate-coding-challenge-server region: nyc1 services: - name: generate-coding-challenge-server dockerfile_path: Dockerfile source_dir: . github: branch: main deploy_on_push: true repo: garrettladley/generate_coding_challenge_server health_check: http_path: /health_check http_port: 8000 instance_count: 1 instance_size_slug: basic-xxs routes: - path: / envs: - key: APP_APPLICATION__BASE_URL scope: RUN_TIME value: ${APP_URL} - key: APP_DATABASE__USERNAME scope: RUN_TIME value: ${challengeserver.USERNAME} - key: APP_DATABASE__PASSWORD scope: RUN_TIME value: ${challengeserver.PASSWORD} - key: APP_DATABASE__HOST scope: RUN_TIME value: ${challengeserver.HOSTNAME} - key: APP_DATABASE__PORT scope: RUN_TIME value: ${challengeserver.PORT} - key: APP_DATABASE__DATABASE_NAME scope: RUN_TIME value: ${challengeserver.DATABASE} databases: - engine: PG name: challengeserver num_nodes: 1 size: db-s-dev-database version: \"12\"",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./.dockerignore",
+          "path": ".dockerignore",
           "content": ".env .dockerignore spec.yaml target/ deploy/ tests/ Dockerfile scripts/ migrations/",
           "relevant": true,
           "rank": 4
         },
         {
-          "path": "./Dockerfile",
+          "path": "Dockerfile",
           "content": "FROM lukemathwalker/cargo-chef:latest-rust-1.71.0 as chef WORKDIR /app RUN apt update && apt install lld clang -y FROM chef as planner COPY . . RUN cargo chef prepare --recipe-path recipe.json FROM chef as builder COPY --from=planner /app/recipe.json recipe.json RUN cargo chef cook --release --recipe-path recipe.json COPY . . ENV SQLX_OFFLINE true RUN cargo build --release --bin generate_coding_challenge_server FROM debian:bullseye-slim AS runtime WORKDIR /app RUN apt-get update -y  && apt-get install -y --no-install-recommends openssl ca-certificates  && apt-get autoremove -y  && apt-get clean -y  && rm -rf /var/lib/apt/lists/* COPY --from=builder /app/target/release/generate_coding_challenge_server generate_coding_challenge_server COPY configuration configuration ENV APP_ENVIRONMENT production ENTRYPOINT [\"./generate_coding_challenge_server\"]",
           "relevant": true,
           "rank": 5
         },
         {
-          "path": "./src/utils.rs",
+          "path": "src/utils.rs",
           "content": "use actix_web::http::header::LOCATION; use actix_web::HttpResponse; pub fn e500<T>(e: T) -> actix_web::Error where T: std::fmt::Debug + std::fmt::Display + 'static, { actix_web::error::ErrorInternalServerError(e) } pub fn e400<T: std::fmt::Debug + std::fmt::Display>(e: T) -> actix_web::Error where T: std::fmt::Debug + std::fmt::Display + 'static, { actix_web::error::ErrorBadRequest(e) } pub fn see_other(location: &str) -> HttpResponse { HttpResponse::SeeOther() .insert_header((LOCATION, location)) .finish() }",
           "relevant": false
         },
         {
-          "path": "./src/domain/algo_question.rs",
+          "path": "src/domain/algo_question.rs",
           "content": "use rand::{ seq::{IteratorRandom, SliceRandom}, Rng, }; use strum::IntoEnumIterator; use rand_pcg::Pcg64; use rand_seeder::Seeder; use crate::domain::Color; pub struct Challenge { pub challenge: Vec<String>, pub solution: Vec<String>, } #[derive(strum::EnumIter, Debug)] enum EditType { Insertion, Deletion, Substitution, } pub fn generate_challenge(nuid: &str, n_random: usize, mandatory_cases: Vec<String>) -> Challenge { let mut rng: Pcg64 = Seeder::from(nuid).make_rng(); let random_cases: Vec<String> = (0..n_random) .map(|_| { let color = Color::iter().choose(&mut rng).unwrap().to_string(); let len = color.len(); let random_count = rng.gen_range(0..=len); if random_count == 0 { return color; } match EditType::iter().choose(&mut rng).unwrap() { EditType::Deletion => color.chars().skip(random_count).collect(), EditType::Insertion => { let alphabet: Vec<char> = ('a'..='z').collect(); let mut color_chars: Vec<char> = color.chars().collect(); let random_chars = alphabet .choose_multiple(&mut rng, random_count) .cloned() .collect::<Vec<char>>(); let random_indices = (0..random_count) .map(|_| rng.gen_range(0..=color_chars.len())) .collect::<Vec<usize>>(); for (index, random_char) in random_indices.into_iter().zip(random_chars) { color_chars.insert(index, random_char); } color_chars.into_iter().collect() } EditType::Substitution => { let changed_indices: Vec<_> = (0..random_count).map(|_| rng.gen_range(0..len)).collect(); let alphabet: Vec<char> = ('a'..='z').collect(); let mut color_chars: Vec<char> = color.chars().collect(); for index in changed_indices { let original_char = color_chars[index]; let mut new_char; loop { new_char = *alphabet.choose(&mut rng).unwrap(); if new_char != original_char { break; } } color_chars[index] = new_char; } color_chars.into_iter().collect() } } }) .collect(); let mut all_cases = mandatory_cases; all_cases.extend(random_cases); let answers: Vec<String> = all_cases .iter() .filter_map(|case| one_edit_away(case)) .map(|color| color.to_string()) .collect::<Vec<String>>(); Challenge { challenge: all_cases, solution: answers, } } fn n_edits_away(str1: &str, str2: &str, n: isize) -> bool { if (str1.len() as isize - str2.len() as isize).abs() > n { return false; } let (shorter, longer) = if str1.len() > str2.len() { (str2, str1) } else { (str1, str2) }; let mut short_pointer = 0; let mut long_pointer = 0; let mut edit_count = 0; while short_pointer < shorter.len() && long_pointer < longer.len() { if shorter.chars().nth(short_pointer) != longer.chars().nth(long_pointer) { edit_count += 1; if edit_count > n { return false; } if shorter.len() == longer.len() { short_pointer += 1; } } else { short_pointer += 1; } long_pointer += 1; } edit_count <= n } pub fn one_edit_away(str: &str) -> Option<Color> { Color::iter().find(|&color| n_edits_away(str, color.to_string().as_str(), 1)) } #[cfg(test)] mod tests { use super::generate_challenge; use super::one_edit_away; use super::Color; #[test] fn test_generate_challenge() { let mandatory_cases: Vec<String> = vec![ String::from(\"\"), Color::Red.to_string(), Color::Orange.to_string(), Color::Yellow.to_string(), Color::Green.to_string(), Color::Blue.to_string(), Color::Violet.to_string(), ]; let n_mandatory = mandatory_cases.len(); let n_random = 10; let challenge = generate_challenge(&String::from(\"001234567\"), n_random, mandatory_cases); assert_eq!(challenge.challenge.len(), n_mandatory + n_random); assert!(challenge .solution .iter() .all(|soln| one_edit_away(soln).is_some())); } #[test] fn test_one_edit_away_example() { assert_eq!(one_edit_away(\"red\").unwrap(), Color::Red); assert_eq!(one_edit_away(\"lue\").unwrap(), Color::Blue); assert!(one_edit_away(\"ooran\").is_none()); assert!(one_edit_away(\"abc\").is_none()); assert_eq!(one_edit_away(\"greene\").unwrap(), Color::Green); } }",
           "relevant": false
         }
@@ -188,30 +189,30 @@
       "narrative": "in this query the user is likely looking for the async runtime used within the application. there is a typo in the query as the crate is called tokio. the user is likely looking for snippets related to the configuration of the async runtime, usage of macros from the tokio crate, and the declaration of the dependendency in Cargo.toml.",
       "results": [
         {
-          "path": "./src/main.rs",
+          "path": "src/main.rs",
           "content": "use std::net::TcpListener; use generate_coding_challenge_server::configuration::get_configuration; use generate_coding_challenge_server::startup::run; use generate_coding_challenge_server::telemetry::{get_subscriber, init_subscriber}; use sqlx::postgres::PgPoolOptions; #[tokio::main] async fn main() -> std::io::Result<()> { let subscriber = get_subscriber( \"generate_coding_challenge_server\".into(), \"info\".into(), std::io::stdout, ); init_subscriber(subscriber); let configuration = get_configuration().expect(\"Failed to read configuration.\"); let connection_pool = PgPoolOptions::new() .acquire_timeout(std::time::Duration::from_secs(2)) .connect_with(configuration.database.with_db()) .await .expect(\"Failed to connect to Postgres.\"); let address = format!( \"{}:{}\", configuration.application.host, configuration.application.port ); let listener = TcpListener::bind(address)?; run(listener, connection_pool)?.await?; Ok(()) }",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./tests/api/challenge.rs",
+          "path": "tests/api/challenge.rs",
           "content": "#[tokio::test] async fn challenge_returns_a_200_for_token_that_exists() { let app = spawn_app().await; let client = reqwest::Client::new(); let register_response = register_sample_applicant(&client, &app.address).await; assert_eq!(200, register_response.status().as_u16()); let register_response: RegisterResponseData = serde_json::from_str(®ister_response.text().await.unwrap()) .expect(\"Failed to parse response JSON\"); let challenge_response = client .get(&format!( \"{}/challenge/{}\", &app.address, ®ister_response.token )) .send() .await .expect(\"Failed to execute request.\"); assert_eq!(200, challenge_response.status().as_u16()); let challenge_response: ChallengeResponseData = serde_json::from_str(&challenge_response.text().await.unwrap()) .expect(\"Failed to parse response JSON\"); assert_eq!(challenge_response.challenge, register_response.challenge); }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./Cargo.toml",
+          "path": "Cargo.toml",
           "content": "[dependencies] actix-web = \"4\" tokio = { version = \"1\", features = [\"macros\", \"rt-multi-thread\"] } serde = \"1.0.115\" config = { version = \"0.13\", default-features = false, features = [\"yaml\"] } sqlx = { version = \"0.7.1\", default-features = false, features = [ \"runtime-tokio-rustls\", \"macros\", \"postgres\", \"uuid\", \"chrono\", \"migrate\", ] }",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./configuration/production.yaml",
+          "path": "configuration/production.yaml",
           "content": "application: host: 0.0.0.0 database: require_ssl: true",
           "relevant": false
         },
         {
-          "path": "./migrations/20230809022436_init.sql",
+          "path": "migrations/20230809022436_init.sql",
           "content": "CREATE TABLE IF NOT EXISTS applicants ( nuid varchar PRIMARY KEY, applicant_name varchar NOT NULL, registration_time timestamp with time zone NOT NULL, token uuid UNIQUE NOT NULL, challenge text[] NOT NULL, solution text[] NOT NULL ); CREATE TABLE IF NOT EXISTS submissions ( submission_id serial PRIMARY KEY, nuid varchar NOT NULL REFERENCES applicants (nuid), correct boolean NOT NULL, submission_time timestamp with time zone NOT NULL );",
           "relevant": false
         }
@@ -222,36 +223,36 @@
       "narrative": "in this query the user is likely looking for environment variables to set up their local or production environment. the user is likely looking for snippets related to the configuration of the application and the usage of environment variables within the application. if possible, a follow up query should be made to understand what environment (local || prod) environment variables are of interest.",
       "results": [
         {
-          "path": "./.env",
+          "path": ".env",
           "content": "DATABASE_URL=\"postgres://postgres:password@localhost:5432/challengeserver\"",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./.dockerignore",
+          "path": ".dockerignore",
           "content": ".env .dockerignore spec.yaml target/ deploy/ tests/ Dockerfile scripts/ migrations/",
           "relevant": false
         },
         {
-          "path": "./src/configuration.rs",
+          "path": "src/configuration.rs",
           "content": "pub fn get_configuration() -> Result<Settings, config::ConfigError> { let base_path = std::env::current_dir().expect(\"Failed to determine the current directory\"); let configuration_directory = base_path.join(\"configuration\"); let environment: Environment = std::env::var(\"APP_ENVIRONMENT\") .unwrap_or_else(|_| \"local\".into()) .try_into() .expect(\"Failed to parse APP_ENVIRONMENT.\"); let environment_filename = format!(\"{}.yaml\", environment.as_str()); let settings = config::Config::builder() .add_source(config::File::from( configuration_directory.join(\"base.yaml\"), )) .add_source(config::File::from( configuration_directory.join(environment_filename), )) .add_source( config::Environment::with_prefix(\"APP\") .prefix_separator(\"_\") .separator(\"__\"), ) .build()?; settings.try_deserialize::<Settings>() }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./Dockerfile",
+          "path": "Dockerfile",
           "content": "ENV APP_ENVIRONMENT production",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./spec.yaml",
+          "path": "spec.yaml",
           "content": "envs: - key: APP_APPLICATION__BASE_URL scope: RUN_TIME value: ${APP_URL} - key: APP_DATABASE__USERNAME scope: RUN_TIME value: ${challengeserver.USERNAME} - key: APP_DATABASE__PASSWORD scope: RUN_TIME value: ${challengeserver.PASSWORD} - key: APP_DATABASE__HOST scope: RUN_TIME value: ${challengeserver.HOSTNAME} - key: APP_DATABASE__PORT scope: RUN_TIME value: ${challengeserver.PORT} - key: APP_DATABASE__DATABASE_NAME scope: RUN_TIME value: ${challengeserver.DATABASE}",
           "relevant": true,
           "rank": 4
         },
         {
-          "path": "./tests/api/main.rs",
+          "path": "tests/api/main.rs",
           "content": "mod applicants; mod challenge; mod forgot_token; mod health_check; mod helpers; mod register; mod submit;",
           "relevant": false
         }
@@ -262,30 +263,30 @@
       "narrative": "in this query the user is likely looking for a sqlx query that inserts a new submission into the database. the user is likely looking for snippets related to the sqlx query and the usage of the query within the application. perhaps they are also looking for a test that verifies the query is working as expected.",
       "results": [
         {
-          "path": "./src/routes/submit.rs",
+          "path": "src/routes/submit.rs",
           "content": "#[tracing::instrument( name = \"Saving applicant submission to the database.\", skip(pool, nuid, correct) )] pub async fn write_submission( pool: &PgPool, nuid: &Nuid, correct: &bool, ) -> Result<(), sqlx::Error> { let submission_time: DateTime<Utc> = SystemTime::now().into(); query!( r#\"INSERT INTO submissions (nuid, correct, submission_time) VALUES ($1, $2, $3);\"#, nuid.as_ref(), correct, submission_time, ) .execute(pool) .await?;",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/routes/submit.rs",
+          "path": "src/routes/submit.rs",
           "content": "match write_submission(&pool, &solution_to_be_checked.nuid, &correct).await { Ok(_) => (), Err(e) => { tracing::error!(\"Failed to execute query: {:?}\", e); return HttpResponse::InternalServerError().finish(); } }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./tests/api/submit.rs",
+          "path": "tests/api/submit.rs",
           "content": "#[tokio::test] async fn submit_returns_a_200_for_correct_solution() { let app = spawn_app().await; let client = reqwest::Client::new(); let register_response = register_sample_applicant(&client, &app.address).await; assert_eq!(200, register_response.status().as_u16()); let response_json: Value = serde_json::from_str(®ister_response.text().await.unwrap()) .expect(\"Failed to parse response JSON\"); let token = response_json[\"token\"].as_str().unwrap(); let challenge: Vec<String> = response_json[\"challenge\"] .as_array() .unwrap() .iter() .filter_map(|value| value.as_str().map(String::from)) .collect(); let solution = challenge .iter() .filter_map(|case| one_edit_away(case)) .map(|color| color.to_string()) .collect::<Vec<String>>(); let solution_json: serde_json::Value = serde_json::Value::Array( solution .iter() .map(|s| serde_json::Value::String(s.clone())) .collect(), ); let response = client .post(&format!(\"{}/submit/{}\", &app.address, &token)) .json(&solution_json) .send() .await .expect(\"Failed to execute request.\"); assert_eq!(200, response.status().as_u16()); let response: SubmitResponseData = serde_json::from_str(&response.text().await.unwrap()) .expect(\"Failed to parse response JSON\"); let correct = response.correct; let message = response.message; assert!(correct); assert_eq!(\"Correct - nice work!\", message); let saved = sqlx::query!(\"SELECT nuid, correct FROM submissions\",) .fetch_one(&app.db_pool) .await .expect(\"Failed to fetch saved applicant.\"); assert_eq!(saved.nuid,\"001234567\"); assert!(saved.correct); }",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./src/telemetry.rs",
+          "path": "src/telemetry.rs",
           "content": "use tracing::subscriber::set_global_default; use tracing::Subscriber; use tracing_bunyan_formatter::{BunyanFormattingLayer, JsonStorageLayer}; use tracing_log::LogTracer; use tracing_subscriber::fmt::MakeWriter; use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry}; pub fn get_subscriber<Sink>( name: String, env_filter: String, sink: Sink, ) -> impl Subscriber + Send + Sync where Sink: for<'a> MakeWriter<'a> + Send + Sync + 'static, { let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(env_filter)); let formatting_layer = BunyanFormattingLayer::new(name, sink); Registry::default() .with(env_filter) .with(JsonStorageLayer) .with(formatting_layer) } pub fn init_subscriber(subscriber: impl Subscriber + Send + Sync) { LogTracer::init().expect(\"Failed to set logger.\"); set_global_default(subscriber).expect(\"Failed to set subscriber.\"); }",
           "relevant": false
         },
         {
-          "path": "./.gitignore",
+          "path": ".gitignore",
           "content": "/target",
           "relevant": false
         }
@@ -296,29 +297,29 @@
       "narrative": "in this query the user likely just cloned the repo to their local and they're looking into how to start the database. the user is likely looking for snippets related to the command to start the database and the configuration of the database.",
       "results": [
         {
-          "path": "./scripts/init_db.sh",
+          "path": "scripts/init_db.sh",
           "content": "#!/usr/bin/env bash set -x set -eo pipefail if ! [ -x \"$(command -v psql)\" ]; then echo >&2 \"Error: psql is not installed.\" exit 1 fi if ! [ -x \"$(command -v sqlx)\" ]; then echo >&2 \"Error: sqlx is not installed.\" echo >&2 \"Use:\" echo >&2 \" cargo install --version='~0.7' sqlx-cli --no-default-features --features rustls,postgres\" echo >&2 \"to install it.\" exit 1 fi DB_USER=\"${POSTGRES_USER:=postgres}\" DB_PASSWORD=\"${POSTGRES_PASSWORD:=password}\" DB_NAME=\"${POSTGRES_DB:=challengeserver}\" DB_PORT=\"${POSTGRES_PORT:=5432}\" DB_HOST=\"${POSTGRES_HOST:=localhost}\" if [[ -z \"${SKIP_DOCKER}\" ]] then RUNNING_POSTGRES_CONTAINER=$(docker ps --filter 'name=postgres' --format '{{.ID}}') if [[ -n $RUNNING_POSTGRES_CONTAINER ]]; then echo >&2 \"there is a postgres container already running, kill it with\" echo >&2 \" docker kill ${RUNNING_POSTGRES_CONTAINER}\" exit 1 fi docker run \\ -e POSTGRES_USER=${DB_USER} \\ -e POSTGRES_PASSWORD=${DB_PASSWORD} \\ -e POSTGRES_DB=${DB_NAME} \\ -p \"${DB_PORT}\":5432 \\ -d \\ --name \"postgres_$(date '+%s')\" \\ postgres -N 1000 fi until PGPASSWORD=\"${DB_PASSWORD}\" psql -h \"${DB_HOST}\" -U \"${DB_USER}\" -p \"${DB_PORT}\" -d \"postgres\" -c '\\q'; do >&2 echo \"Postgres is still unavailable - sleeping\" sleep 1 done >&2 echo \"Postgres is up and running on port ${DB_PORT} - running migrations now!\" export DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME} sqlx database create sqlx migrate run >&2 echo \"Postgres has been migrated, ready to go!\"",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./.github/workflows/general.yml",
+          "path": ".github/workflows/general.yml",
           "content": "- name: Migrate database run: | sudo apt-get install libpq-dev -y SKIP_DOCKER=true ./scripts/init_db.sh",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./.github/workflows/general.yml",
+          "path": ".github/workflows/general.yml",
           "content": "coverage: name: Code coverage runs-on: ubuntu-latest services: postgres: image: postgres:14 env: POSTGRES_USER: postgres POSTGRES_PASSWORD: password POSTGRES_DB: postgres ports: - 5432:5432 steps: - name: Checkout repository uses: actions/checkout@v3 - uses: dtolnay/rust-toolchain@stable - name: Install libpq run: sudo apt-get update && sudo apt-get install postgresql-client -y - uses: Swatinem/rust-cache@v2 with: key: sqlx-${{ env.SQLX_VERSION }} - name: Install tarpaulin run: cargo install cargo-tarpaulin - name: Install sqlx-cli run: cargo install sqlx-cli --version=${{ env.SQLX_VERSION }} --features ${{ env.SQLX_FEATURES }} --no-default-features --locked",
           "relevant": false
         },
         {
-          "path": "./.github/workflows/audit.yml",
+          "path": ".github/workflows/audit.yml",
           "content": "jobs: security_audit: runs-on: ubuntu-latest steps: - uses: actions/checkout@v3 - uses: taiki-e/install-action@cargo-deny - name: Scan for vulnerabilities run: cargo deny check advisories",
           "relevant": false
         },
         {
-          "path": "./README.md",
+          "path": "README.md",
           "content": "",
           "relevant": false
         }
@@ -329,30 +330,30 @@
       "narrative": "the user is likely unfamiliar with the code base and is looking for the struct that represents the name of an applicant. the user is likely looking for snippets related to the definition of the ApplicantName struct and the usage of the struct within the application.",
       "results": [
         {
-          "path": "./src/domain/applicant_name.rs",
+          "path": "src/domain/applicant_name.rs",
           "content": "#[derive(Debug, serde::Serialize, serde::Deserialize)] pub struct ApplicantName(String);",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/domain/register_applicant.rs",
+          "path": "src/domain/register_applicant.rs",
           "content": "#[derive(serde::Serialize)] pub struct RegisterApplicant { pub name: ApplicantName, pub nuid: Nuid, }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./migrations/20230809022436_init.sql",
+          "path": "migrations/20230809022436_init.sql",
           "content": "CREATE TABLE IF NOT EXISTS applicants ( nuid varchar PRIMARY KEY, applicant_name varchar NOT NULL,",
           "relevant": true,
           "rank": 3
         },
         {
-          "path": "./tests/api/main.rs",
+          "path": "tests/api/main.rs",
           "content": "mod applicants; mod challenge; mod forgot_token; mod health_check; mod helpers; mod register; mod submit;",
           "relevant": false
         },
         {
-          "path": "./Cargo.lock",
+          "path": "Cargo.lock",
           "content": "[[package]] name = \"actix-codec\" version = \"0.5.0\" source = \"registry+https://github.com/rust-lang/crates.io-index\" checksum = \"57a7559404a7f3573127aab53c08ce37a6c6a315c374a31070f3c91cd1b4a7fe\" dependencies = [ \"bitflags 1.3.2\", \"bytes\", \"futures-core\", \"futures-sink\", \"log\", \"memchr\", \"pin-project-lite\", \"tokio\", \"tokio-uti\", ]",
           "relevant": false
         }
@@ -363,34 +364,34 @@
       "narrative": "the user is likely unfamiliar with the code base and is looking to write an integration test that uses the database. the user is likely looking for snippets related to the function that makes the database work when running integration tests and the usage of the function within the application.",
       "results": [
         {
-          "path": "./tests/api/helpers.rs",
+          "path": "tests/api/helpers.rs",
           "content": "pub async fn configure_database(config: &DatabaseSettings) -> PgPool { let mut connection = PgConnection::connect_with(&config.without_db()) .await .expect(\"Failed to connect to Postgres\"); connection .execute(&*format!(r#\"CREATE DATABASE \"{}\";\"#, config.database_name)) .await .expect(\"Failed to create database.\"); let connection_pool = PgPool::connect_with(config.with_db()) .await .expect(\"Failed to connect to Postgres.\"); sqlx::migrate!(\"./migrations\") .run(&connection_pool) .await .expect(\"Failed to migrate the database\"); connection_pool }",
           "relevant": true,
           "rank": 1
         },
         {
-          "path": "./src/routes/forgot_token.rs",
+          "path": "src/routes/forgot_token.rs",
           "content": "use crate::domain::Nuid; use actix_web::{web, HttpResponse}; use sqlx::{query, PgPool}; #[derive(serde::Serialize)] pub struct ForgotTokenResponseData { pub token: String, } #[tracing::instrument( name = \"Forgot token.\", skip(nuid, pool), fields( applicant_nuid = %nuid ) )] pub async fn forgot_token(nuid: web::Path<String>, pool: web::Data<PgPool>) -> HttpResponse { let nuid = match Nuid::parse(nuid.into_inner()) { Ok(nuid) => nuid, Err(err) => { tracing::error!(err); return HttpResponse::BadRequest().json(err); } }; match retrieve_token(&pool, &nuid).await { Ok(response_data) => HttpResponse::Ok().json(response_data), Err(sqlx::Error::RowNotFound) => { tracing::error!( \"Record associated with given NUID not found! NUID: {}\", nuid ); HttpResponse::NotFound().json(format!( \"Record associated with given NUID not found! NUID: {}\", nuid )) } Err(e) => { tracing::error!(\"Failed to execute query: {:?}\", e); HttpResponse::InternalServerError().finish() } } } #[tracing::instrument(name = \"Fetching applicant token from the database.\", skip(nuid, pool))] pub async fn retrieve_token( pool: &PgPool, nuid: &Nuid, ) -> Result<ForgotTokenResponseData, sqlx::Error> { let record = query!( r#\"SELECT token FROM applicants WHERE nuid=$1\"#, nuid.as_ref() ) .fetch_one(pool) .await .map_err(|e| { tracing::error!(\"Failed to execute query: {:?}\", e); e })?; if record.token.to_string().is_empty() { return Err(sqlx::Error::RowNotFound); } Ok(ForgotTokenResponseData { token: record.token.to_string(), }) }",
           "relevant": false
         },
         {
-          "path": "./tests/api/helpers.rs",
+          "path": "tests/api/helpers.rs",
           "content": "let mut configuration = get_configuration().expect(\"Failed to read configuration.\"); configuration.database.database_name = Uuid::new_v4().to_string(); let connection_pool = configure_database(&configuration.database).await; let server = run(listener, connection_pool.clone()).expect(\"Failed to bind address to random port.\"); std::mem::drop(tokio::spawn(server)); TestApp { address, db_pool: connection_pool, }",
           "relevant": true,
           "rank": 2
         },
         {
-          "path": "./.github/workflows/general.yml",
+          "path": ".github/workflows/general.yml",
           "content": "- name: Migrate database run: | sudo apt-get install libpq-dev -y SKIP_DOCKER=true ./scripts/init_db.sh",
           "relevant": false
         },
         {
-          "path": "./tests/api/helpers.rs",
+          "path": "tests/api/helpers.rs",
           "content": "pub async fn register_sample_applicant(client: &reqwest::Client, address: &str) -> Response { register_sample_applicant_with_nuid(client, address, \"001234567\").await }",
           "relevant": false
         },
         {
-          "path": "./src/routes/submit.rs",
+          "path": "src/routes/submit.rs",
           "content": "let solution_to_be_checked = match retrieve_solution(&pool, &token).await { Ok(intermediary_solution) => { let nuid = match Nuid::parse(intermediary_solution.nuid.clone()) { Ok(nuid) => nuid, Err(_) => { tracing::error!( \"Invalid database state for NUID! Given: {}\", intermediary_solution.nuid ); return HttpResponse::InternalServerError().finish(); } }; SolutionToBeChecked { nuid, solution: intermediary_solution.actual_solution, } } Err(sqlx::Error::RowNotFound) => { tracing::error!(\"Row not found: {:?}\", token); return HttpResponse::NotFound().json(format!( \"Record associated with given token not found! Token: {}\", token )); } Err(e) => { tracing::error!(\"Failed to execute query: {:?}\", e); return HttpResponse::InternalServerError().finish(); } }; let correct = solution_to_be_checked.solution == *body.as_ref(); match write_submission(&pool, &solution_to_be_checked.nuid, &correct).await { Ok(_) => (), Err(e) => { tracing::error!(\"Failed to execute query: {:?}\", e); return HttpResponse::InternalServerError().finish(); } } let response_data = SubmitResponseData { correct, message: if correct { \"Correct - nice work!\".to_string() } else { \"Incorrect Solution\".to_string() }, }; HttpResponse::Ok().json(response_data)",
           "relevant": false
         }
