@@ -1,10 +1,14 @@
-use std::{collections::HashSet, sync::Mutex, thread};
+use std::{collections::HashSet, fs, process::Command, sync::Mutex, thread};
 
 use clap::Parser;
 use notify::{event::ModifyKind, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper::{
     cli::Args,
+    evaluation::{
+        evaluation_data::Relevance, ranking_evaluation::TestQuery, EvaluationData,
+        RawEvaluationData, TestSet,
+    },
     globals::Globals,
     inverted_index::InvertedIndex,
     ranking::RankingAlgorithm,
@@ -14,7 +18,7 @@ use rust_stemmers::{Algorithm, Stemmer};
 
 use std::sync::Arc;
 
-fn main() -> notify::Result<()> {
+fn main() {
     let args = Args::parse();
 
     let globals = Arc::new(Globals {
@@ -25,6 +29,12 @@ fn main() -> notify::Result<()> {
             .map(|word| word.to_string())
             .collect::<HashSet<String>>(),
     });
+
+    if args.evaluate {
+        evaluate_training(&args, &globals);
+
+        return;
+    }
 
     let globals_clone = Arc::clone(&globals);
 
@@ -40,6 +50,7 @@ fn main() -> notify::Result<()> {
     let inverted_index = Arc::new(Mutex::new(InvertedIndex::new(
         args.directory,
         transformer_clone.as_ref(),
+        None,
     )));
 
     println!(
@@ -108,6 +119,62 @@ fn main() -> notify::Result<()> {
             None => println!("No results found :("),
         }
     }
+}
 
-    Ok(())
+fn evaluate_training(args: &Args, globals: &Globals) {
+    let file_content = fs::read_to_string("./data/train.json").expect("Failed to read file");
+
+    let raw_evaluation_data: RawEvaluationData =
+        serde_json::from_str(&file_content).expect("Failed to deserialize JSON data");
+
+    let evaluation_data = EvaluationData::parse(raw_evaluation_data, globals);
+
+    let path = "./data/repo";
+
+    Command::new("git")
+        .arg("clone")
+        .arg(evaluation_data.repo.to_string())
+        .arg(path)
+        .output()
+        .expect("Failed to execute command");
+
+    Command::new("git")
+        .arg("checkout")
+        .arg(evaluation_data.commit)
+        .current_dir(path)
+        .output()
+        .expect("Failed to execute command");
+
+    let inverted_index = InvertedIndex::new(
+        path,
+        |content: &str| n_gram_transform(content, globals),
+        Some(path),
+    );
+
+    let queries = evaluation_data
+        .examples
+        .par_iter()
+        .map(|example| {
+            let relevant_docs = example
+                .results
+                .iter()
+                .filter(|result| matches!(result.relevance, Relevance::Relevant(_)))
+                .map(|result| result.path.clone())
+                .collect();
+
+            TestQuery {
+                query: example.query.clone(),
+                relevant_docs,
+            }
+        })
+        .collect::<Vec<TestQuery>>();
+
+    println!(
+        "Evaluation: {:?}",
+        TestSet {
+            ranking_algorithm: Box::new(args.ranking_algorithm.clone()),
+            queries
+        }
+        .evaluate(&inverted_index, args.top_n)
+    );
 }

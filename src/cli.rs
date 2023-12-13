@@ -22,4 +22,7 @@ pub struct Args {
     /// Number of results to return
     #[clap(short, long, default_value = "10")]
     pub top_n: usize,
+    /// Evaluate the training set
+    #[clap(short, long, default_value = "false")]
+    pub evaluate: bool,
 }

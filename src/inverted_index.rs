@@ -18,16 +18,19 @@ pub struct TermDocument {
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct Term(pub String);
 
+#[derive(Debug)]
 pub struct InvertedIndex(pub HashMap<Term, HashMap<PathBuf, TermDocument>>);
 
 impl InvertedIndex {
-    pub fn new<P, F>(root: P, transform_fn: F) -> Self
+    pub fn new<P, F>(root: P, transform_fn: F, drop_prefix: Option<P>) -> Self
     where
-        P: Into<PathBuf>,
+        P: AsRef<Path> + Sync,
         F: Fn(&str) -> HashSet<Term> + Sync,
     {
         let index = Arc::new(Mutex::new(HashMap::new()));
-        let root_path: PathBuf = root.into();
+        let root_path: PathBuf = root.as_ref().to_owned();
+
+        let drop_prefix = drop_prefix.map(|p| p.as_ref().to_owned());
 
         WalkDir::new(root_path)
             .into_iter()
@@ -35,7 +38,14 @@ impl InvertedIndex {
             .filter(|e| e.file_type().is_file())
             .par_bridge()
             .for_each(|entry| {
-                let entry_path = entry.path().to_path_buf();
+                let mut entry_path = entry.path().to_path_buf();
+
+                if let Some(ref prefix) = drop_prefix {
+                    entry_path = entry_path
+                        .strip_prefix(prefix)
+                        .unwrap_or(&entry_path)
+                        .to_owned();
+                }
 
                 if let Ok(content) = Self::read_document(&entry_path) {
                     let index_clone = Arc::clone(&index);
