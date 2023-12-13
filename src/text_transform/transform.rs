@@ -1,13 +1,12 @@
-use rayon::{iter::ParallelIterator, slice::ParallelSlice, str::ParallelString};
+use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use rust_stemmers::Stemmer;
 
 pub fn n_gram_transform(content: &str, stemmer: &Stemmer, n: usize) -> Vec<String> {
     content
         .to_lowercase()
-        .par_split_whitespace()
-        .map(|s| s.chars().filter(|c| c.is_alphabetic()).collect::<String>())
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-        .map(|token| stemmer.stem(&token).to_string())
+        .map(|token| stemmer.stem(token).to_string())
         .collect::<Vec<_>>()
         .par_windows(n)
         .map(|window| window.join(" "))
@@ -58,7 +57,8 @@ mod tests {
                 "over".to_string(),
                 "the".to_string(),
                 "lazi".to_string(),
-                "dog".to_string()
+                "dog".to_string(),
+                "123".to_string()
             ])
         );
     }
@@ -67,7 +67,7 @@ mod tests {
     fn n_gram_transform_with_special_characters() {
         assert_eq!(
             to_hash_set(n_gram_transform("Rust 2023! @#%^&*", &get_stemmer(), 1)),
-            to_hash_set(vec!["rust".to_string()])
+            to_hash_set(vec!["rust".to_string(), "2023".to_string()])
         );
     }
 
