@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  BIN_NAME: repo_reaper
 
 jobs:
   test:
@@ -102,13 +103,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            bin: target/release/when3meet
+            bin: target/release/$BIN_NAME
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: target/release/when3meet.exe
+            bin: target/release/$BIN_NAME.exe
           - os: macOS-latest
             target: x86_64-apple-darwin
-            bin: target/release/when3meet
+            bin: target/release/$BIN_NAME
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -124,8 +125,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release --manifest-path ./Cargo.toml --bin when3meet
+          args: --release --manifest-path ./Cargo.toml --bin $BIN_NAME
       - uses: actions/upload-artifact@v2
         with:
-          name: repo_reaper-${{ matrix.target }}
+          name: $BIN_NAME-${{ matrix.target }}
           path: ${{ matrix.bin}}
