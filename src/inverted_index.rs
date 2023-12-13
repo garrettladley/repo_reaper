@@ -62,7 +62,7 @@ impl InvertedIndex {
         let terms = transform_fn(content);
 
         for term in terms {
-            let entry = index.entry(Term(term)).or_insert_with(HashMap::new);
+            let entry = index.entry(Term(term)).or_default();
             let term_document =
                 entry
                     .entry(entry_path.to_path_buf())
