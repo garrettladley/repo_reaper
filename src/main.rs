@@ -1,7 +1,6 @@
 use repo_reaper::{
-    config::get_configuration,
     inverted_index::InvertedIndex,
-    ranking::{tf_idf::TFIDF, RankingAlgorithm},
+    ranking::{bm25::get_configuration, tf_idf::TFIDF, RankingAlgorithm},
     text_transform::{n_gram_transform, Query},
 };
 use rust_stemmers::{Algorithm, Stemmer};
