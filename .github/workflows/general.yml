@@ -10,7 +10,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  BIN_NAME: repo_reaper
 
 jobs:
   test:
@@ -103,13 +102,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            bin: target/release/${{ env.BIN_NAME }}
+            bin: target/release/repo_reaper
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: target/release/${{ env.BIN_NAME }}.exe
+            bin: target/release/repo_reaper.exe
           - os: macOS-latest
             target: x86_64-apple-darwin
-            bin: target/release/${{ env.BIN_NAME }}
+            bin: target/release/repo_reaper
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -125,8 +124,8 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release --manifest-path ./Cargo.toml --bin ${{ env.BIN_NAME }}
+          args: --release --manifest-path ./Cargo.toml --bin repo_reaper
       - uses: actions/upload-artifact@v2
         with:
-          name: ${{ env.BIN_NAME }}-${{ matrix.target }}
+          name: repo_reaper-${{ matrix.target }}
           path: ${{ matrix.bin}}
