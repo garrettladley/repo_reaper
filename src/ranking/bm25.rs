@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+
+use std::sync::{Arc, Mutex};
+
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::inverted_index::InvertedIndex;
 use crate::ranking::{utils::idf, Rank, RankingAlgorithm};
@@ -28,14 +31,14 @@ pub struct BM25 {
 
 impl RankingAlgorithm for BM25 {
     fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank> {
-        let mut scores: HashMap<PathBuf, f64> = HashMap::new();
         let avgdl = inverted_index.avg_doc_length();
+        let scores = Arc::new(Mutex::new(HashMap::new()));
 
-        for term in &query.0 {
+        query.0.par_iter().for_each(|term| {
             if let Some(documents) = inverted_index.0.get(term) {
                 let idf = idf(inverted_index.num_docs(), documents.len());
 
-                for (doc_path, term_doc) in documents {
+                documents.par_iter().for_each(|(doc_path, term_doc)| {
                     let tf = term_doc.term_freq as f64;
                     let doc_length = term_doc.length as f64;
                     let score = idf * (tf * (self.hyper_params.k1 + 1.0))
@@ -44,10 +47,13 @@ impl RankingAlgorithm for BM25 {
                                 * (1.0 - self.hyper_params.b
                                     + self.hyper_params.b * doc_length / avgdl));
 
-                    *scores.entry(doc_path.clone()).or_insert(0.0) += score;
-                }
+                    let mut scores_lock = scores.lock().unwrap();
+                    *scores_lock.entry(doc_path.clone()).or_insert(0.0) += score;
+                });
             }
-        }
+        });
+
+        let scores = Arc::try_unwrap(scores).unwrap().into_inner().unwrap();
 
         let mut scores: Vec<Rank> = scores
             .into_iter()
@@ -55,7 +61,6 @@ impl RankingAlgorithm for BM25 {
             .collect();
 
         scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-
         scores.truncate(top_n);
 
         scores

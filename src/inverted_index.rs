@@ -1,16 +1,19 @@
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use walkdir::WalkDir;
 
+#[derive(Debug)]
 pub struct TermDocument {
     pub length: usize,
     pub term_freq: usize,
 }
 
-#[derive(Hash, Eq, PartialEq)]
+#[derive(Hash, Eq, PartialEq, Debug)]
 pub struct Term(pub String);
 
 pub struct InvertedIndex(pub HashMap<Term, HashMap<PathBuf, TermDocument>>);
@@ -19,31 +22,26 @@ impl InvertedIndex {
     pub fn new<P, F>(root: P, transform_fn: F) -> Self
     where
         P: Into<PathBuf>,
-        F: Fn(&str) -> Vec<String>,
+        F: Fn(&str) -> Vec<String> + Sync,
     {
-        let mut index = HashMap::new();
+        let index = Arc::new(Mutex::new(HashMap::new()));
         let root_path: PathBuf = root.into();
 
-        for entry in WalkDir::new(root_path)
+        WalkDir::new(root_path)
             .into_iter()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
-        {
-            let entry_path = entry.path().to_path_buf();
+            .par_bridge()
+            .for_each(|entry| {
+                let entry_path = entry.path().to_path_buf();
 
-            if let Ok(content) = Self::read_document(&entry_path) {
-                Self::process_document(&mut index, &entry_path, &content, &transform_fn);
-            }
+                if let Ok(content) = Self::read_document(&entry_path) {
+                    let index_clone = Arc::clone(&index);
+                    Self::process_document(&index_clone, &entry_path, &content, &transform_fn);
+                }
+            });
 
-            Self::process_document(
-                &mut index,
-                &entry_path,
-                &entry_path.to_string_lossy(),
-                &transform_fn,
-            );
-        }
-
-        InvertedIndex(index)
+        InvertedIndex(Arc::try_unwrap(index).unwrap().into_inner().unwrap())
     }
 
     fn read_document(entry_path: &PathBuf) -> Result<String, std::io::Error> {
@@ -51,18 +49,20 @@ impl InvertedIndex {
     }
 
     fn process_document<F>(
-        index: &mut HashMap<Term, HashMap<PathBuf, TermDocument>>,
+        index: &Arc<Mutex<HashMap<Term, HashMap<PathBuf, TermDocument>>>>,
         entry_path: &Path,
         content: &str,
         transform_fn: &F,
     ) where
-        F: Fn(&str) -> Vec<String>,
+        F: Fn(&str) -> Vec<String> + Sync,
     {
         let document_length = content.split_whitespace().count();
         let terms = transform_fn(content);
 
+        let mut index_lock = index.lock().unwrap();
+
         for term in terms {
-            let entry = index.entry(Term(term)).or_default();
+            let entry = index_lock.entry(Term(term)).or_default();
             let term_document =
                 entry
                     .entry(entry_path.to_path_buf())

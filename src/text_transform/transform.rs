@@ -1,9 +1,11 @@
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use rust_stemmers::Stemmer;
 
 fn transform(content: &str, stemmer: &Stemmer) -> Vec<String> {
     content
         .to_lowercase()
         .split_whitespace()
+        .par_bridge()
         .map(|s| s.chars().filter(|c| c.is_alphabetic()).collect::<String>())
         .filter(|s| !s.is_empty())
         .map(|token| stemmer.stem(&token).to_string())
