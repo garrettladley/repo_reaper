@@ -37,41 +37,59 @@ mod tests {
     }
 
     #[test]
-    fn test_transform() {
+    fn n_gram_transform_simple_sentence() {
         let stemmer = get_stemmer();
-
         assert_eq!(
             n_gram_transform("The quick brown fox", &stemmer, 1),
             vec!["the", "quick", "brown", "fox"]
         );
+    }
 
+    #[test]
+    fn n_gram_transform_with_punctuation() {
+        let stemmer = get_stemmer();
         assert_eq!(
             n_gram_transform("Jumps over the lazy dog!123", &stemmer, 1),
             vec!["jump", "over", "the", "lazi", "dog"]
         );
+    }
 
+    #[test]
+    fn n_gram_transform_with_special_characters() {
+        let stemmer = get_stemmer();
         assert_eq!(
             n_gram_transform("Rust 2023! @#%^&*", &stemmer, 1),
             vec!["rust"]
         );
+    }
 
+    #[test]
+    fn n_gram_transform_empty_string() {
+        let stemmer = get_stemmer();
         assert_eq!(n_gram_transform("", &stemmer, 1), Vec::<String>::new());
     }
 
     #[test]
-    fn test_n_gram_transform() {
+    fn n_gram_transform_bi_grams() {
         let stemmer = get_stemmer();
-
         assert_eq!(
             n_gram_transform("The quick brown fox", &stemmer, 2),
             vec!["the quick", "quick brown", "brown fox"]
         );
+    }
 
+    #[test]
+    fn n_gram_transform_n_larger_than_words() {
+        let stemmer = get_stemmer();
         assert_eq!(
             n_gram_transform("The quick", &stemmer, 3),
             Vec::<String>::new()
         );
+    }
 
+    #[test]
+    fn n_gram_transform_empty_string_bi_gram() {
+        let stemmer = get_stemmer();
         assert_eq!(n_gram_transform("", &stemmer, 2), Vec::<String>::new());
     }
 }
