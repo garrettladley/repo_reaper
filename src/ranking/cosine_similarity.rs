@@ -47,8 +47,11 @@ impl RankingAlgorithm for CosineSimilarity {
                         .sqrt();
                     let cosine_similarity = score / (query_magnitude * doc_magnitude);
 
-                    let mut scores_lock = scores.lock().unwrap();
-                    *scores_lock.entry(doc_path.clone()).or_insert(0.0) += cosine_similarity;
+                    *scores
+                        .lock()
+                        .unwrap()
+                        .entry(doc_path.clone())
+                        .or_insert(0.0) += cosine_similarity;
                 });
             }
         });
@@ -56,8 +59,11 @@ impl RankingAlgorithm for CosineSimilarity {
         let scores = Arc::try_unwrap(scores).unwrap().into_inner().unwrap();
 
         let mut scores: Vec<Rank> = scores
-            .into_iter()
-            .map(|(doc_path, score)| Rank { doc_path, score })
+            .par_iter()
+            .map(|(doc_path, score)| Rank {
+                doc_path: doc_path.clone(),
+                score: *score,
+            })
             .collect();
 
         scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
