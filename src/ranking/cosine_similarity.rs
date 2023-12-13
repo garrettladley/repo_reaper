@@ -10,7 +10,12 @@ use crate::text_transform::Query;
 pub struct CosineSimilarity;
 
 impl RankingAlgorithm for CosineSimilarity {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank> {
+    fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Vec<Rank>> {
         let query_magnitude = query
             .0
             .par_iter()
@@ -69,6 +74,9 @@ impl RankingAlgorithm for CosineSimilarity {
         scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         scores.truncate(top_n);
 
-        scores
+        match scores.is_empty() {
+            true => None,
+            false => Some(scores),
+        }
     }
 }

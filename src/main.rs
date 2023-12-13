@@ -1,10 +1,12 @@
 use std::{collections::HashSet, sync::Mutex, thread};
 
-use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use clap::Parser;
+use notify::{event::ModifyKind, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper::{
+    cli::Args,
     inverted_index::InvertedIndex,
-    ranking::{bm25::get_configuration, RankingAlgorithm, BM25},
+    ranking::RankingAlgorithm,
     text_transform::{n_gram_transform, Query},
 };
 use rust_stemmers::{Algorithm, Stemmer};
@@ -26,27 +28,37 @@ fn get_stop_words() -> Arc<HashSet<String>> {
 
 fn main() -> notify::Result<()> {
     let stop_words = get_stop_words();
-    let stemmer = get_stemmer();
     let stop_words_clone = Arc::clone(&stop_words);
+
+    let stemmer = get_stemmer();
     let stemmer_clone = Arc::clone(&stemmer);
 
-    let n_grams = 1;
+    let args = Args::parse();
 
-    let path = "./src/";
+    let algo = args.ranking_algorithm;
 
     let transformer = Arc::new(move |content: &str| {
-        n_gram_transform(content, &stemmer_clone, &stop_words_clone, n_grams)
+        n_gram_transform(content, &stemmer_clone, &stop_words_clone, args.n_grams)
     });
     let transformer_clone = Arc::clone(&transformer);
+
+    let path_clone = args.directory.clone();
+
+    println!("Indexing files in {}", args.directory.to_str().unwrap());
+
     let inverted_index = Arc::new(Mutex::new(InvertedIndex::new(
-        path,
+        args.directory,
         transformer_clone.as_ref(),
     )));
+
+    println!(
+        "Successfully indexed {} files",
+        inverted_index.lock().unwrap().num_docs()
+    );
 
     let (tx, rx) = std::sync::mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
     let rx_clone = Arc::clone(&rx);
-    let path_clone = path.clone();
 
     let inverted_index_clone_for_thread = Arc::clone(&inverted_index);
 
@@ -60,24 +72,15 @@ fn main() -> notify::Result<()> {
             match rx_clone.lock().unwrap().recv() {
                 Ok(event) => match event {
                     Ok(event) => match event.kind {
-                        EventKind::Modify(modify_kind) => match modify_kind {
-                            notify::event::ModifyKind::Metadata(_) => continue,
-                            _ => {
-                                for path in event.paths {
-                                    let path_clone = path.clone();
-                                    inverted_index_clone_for_thread
-                                        .lock()
-                                        .unwrap()
-                                        .update(&path_clone, &transformer.as_ref());
-                                    println!(
-                                        "Successfully reindexed {}",
-                                        path_clone.to_str().unwrap()
-                                    );
-                                }
-                            }
-                        },
+                        EventKind::Modify(ModifyKind::Metadata(_)) => continue,
                         _ => {
-                            println!("Other event: {:?}", event);
+                            for path in &event.paths {
+                                let path_clone = path.clone();
+                                inverted_index_clone_for_thread
+                                    .lock()
+                                    .unwrap()
+                                    .update(&path_clone, &transformer.as_ref());
+                            }
                         }
                     },
                     Err(error) => eprintln!("watch error: {:?}", error),
@@ -91,6 +94,7 @@ fn main() -> notify::Result<()> {
 
     loop {
         println!("Enter a query: ");
+
         let mut query = String::new();
         std::io::stdin().read_line(&mut query).unwrap();
 
@@ -98,21 +102,20 @@ fn main() -> notify::Result<()> {
             break;
         }
 
-        let algo = BM25 {
-            hyper_params: get_configuration().unwrap(),
-        };
-
-        let top_n = 10;
-
-        algo.rank(
+        let ranking = algo.rank(
             &inverted_index.lock().unwrap(),
-            &Query::new(&query, &stemmer, &stop_words, n_grams),
-            top_n,
-        )
-        .iter()
-        .for_each(|rank| {
-            println!("{:?}", rank);
-        });
+            &Query::new(&query, &stemmer, &stop_words, args.n_grams),
+            args.top_n,
+        );
+
+        match ranking {
+            Some(ranking) => {
+                ranking.iter().for_each(|rank| {
+                    println!("{:?}", rank);
+                });
+            }
+            None => println!("No results found :("),
+        }
     }
 
     Ok(())

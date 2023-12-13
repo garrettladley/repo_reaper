@@ -21,11 +21,21 @@ pub enum RankingAlgos {
 }
 
 pub trait RankingAlgorithm {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank>;
+    fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Vec<Rank>>;
 }
 
 impl RankingAlgorithm for RankingAlgos {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank> {
+    fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Vec<Rank>> {
         let algo: Box<dyn RankingAlgorithm> = match self {
             RankingAlgos::CosineSimilarity => Box::new(CosineSimilarity),
             RankingAlgos::BM25(hyper_params) => Box::new(BM25 {

@@ -11,7 +11,12 @@ use crate::text_transform::Query;
 pub struct TFIDF;
 
 impl RankingAlgorithm for TFIDF {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank> {
+    fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Vec<Rank>> {
         let scores = Arc::new(Mutex::new(HashMap::new()));
 
         query.0.par_iter().for_each(|term| {
@@ -42,6 +47,9 @@ impl RankingAlgorithm for TFIDF {
         scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         scores.truncate(top_n);
 
-        scores
+        match scores.is_empty() {
+            true => None,
+            false => Some(scores),
+        }
     }
 }

@@ -30,7 +30,12 @@ pub struct BM25 {
 }
 
 impl RankingAlgorithm for BM25 {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Vec<Rank> {
+    fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Vec<Rank>> {
         let avgdl = inverted_index.avg_doc_length();
         let scores = Arc::new(Mutex::new(HashMap::new()));
 
@@ -66,6 +71,9 @@ impl RankingAlgorithm for BM25 {
         scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         scores.truncate(top_n);
 
-        scores
+        match scores.is_empty() {
+            true => None,
+            false => Some(scores),
+        }
     }
 }

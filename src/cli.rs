@@ -19,4 +19,7 @@ pub struct Args {
     /// Ranking algorithm
     #[clap(short, long, default_value = "bm25")]
     pub ranking_algorithm: RankingAlgos,
+    /// Number of results to return
+    #[clap(short, long, default_value = "10")]
+    pub top_n: usize,
 }
