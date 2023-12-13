@@ -16,8 +16,6 @@ fn main() {
 
     let n = 1;
 
-    // let mut sp = Spinner::new(Spinners::Dots, "Indexing Documents".into());
-
     let inverted_index = spin_it(
         || {
             InvertedIndex::new("../", |content: &str| {
