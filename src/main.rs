@@ -65,13 +65,13 @@ fn main() -> notify::Result<()> {
                     Ok(event) => match event.kind {
                         EventKind::Modify(ModifyKind::Metadata(_)) => continue,
                         _ => {
-                            for path in &event.paths {
+                            event.paths.par_iter().for_each(|path| {
                                 let path_clone = path.clone();
                                 inverted_index_clone_for_thread
                                     .lock()
                                     .unwrap()
                                     .update(&path_clone, &transformer.as_ref());
-                            }
+                            });
                         }
                     },
                     Err(error) => eprintln!("watch error: {:?}", error),

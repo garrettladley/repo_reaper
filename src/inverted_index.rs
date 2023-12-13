@@ -15,7 +15,7 @@ pub struct TermDocument {
     pub term_freq: usize,
 }
 
-#[derive(Hash, Eq, PartialEq, Debug)]
+#[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct Term(pub String);
 
 pub struct InvertedIndex(pub HashMap<Term, HashMap<PathBuf, TermDocument>>);
@@ -69,7 +69,7 @@ impl InvertedIndex {
             .collect();
 
         let mut index_lock = index.lock().unwrap();
-        for (term, path) in updates {
+        updates.into_iter().for_each(|(term, path)| {
             index_lock
                 .entry(term)
                 .or_default()
@@ -79,7 +79,7 @@ impl InvertedIndex {
                     term_freq: 0,
                 })
                 .term_freq += 1;
-        }
+        });
     }
 }
 
@@ -114,7 +114,7 @@ impl InvertedIndex {
 
             let mut index_lock = index.lock().unwrap();
 
-            for (term, term_document) in index_lock.drain() {
+            index_lock.drain().for_each(|(term, term_document)| {
                 self.0
                     .entry(term)
                     .or_default()
@@ -124,7 +124,7 @@ impl InvertedIndex {
                         term_freq: 0,
                     })
                     .term_freq += term_document.get(path).unwrap().term_freq;
-            }
+            });
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
 use url::Url;
 
@@ -102,7 +102,7 @@ pub fn load_evaluation_data(
 
     let queries = evaluation_data
         .examples
-        .into_iter()
+        .par_iter()
         .map(|example| {
             let relevant_docs = example
                 .results
@@ -112,7 +112,7 @@ pub fn load_evaluation_data(
                 .collect();
 
             TestQuery {
-                query: example.query,
+                query: example.query.clone(),
                 relevant_docs,
             }
         })
