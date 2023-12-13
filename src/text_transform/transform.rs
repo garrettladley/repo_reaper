@@ -1,15 +1,24 @@
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 use rust_stemmers::Stemmer;
 
-pub fn n_gram_transform(content: &str, stemmer: &Stemmer, n: usize) -> Vec<String> {
+use crate::inverted_index::Term;
+
+pub fn n_gram_transform(
+    content: &str,
+    stemmer: &Stemmer,
+    stop_words: &[String],
+    n: usize,
+) -> Vec<Term> {
     content
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
+        .filter(|token| !stop_words.contains(&token.to_string()))
         .map(|token| stemmer.stem(token).to_string())
         .collect::<Vec<_>>()
         .par_windows(n)
         .map(|window| window.join(" "))
+        .map(Term)
         .collect()
 }
 
@@ -17,11 +26,15 @@ pub fn n_gram_transform(content: &str, stemmer: &Stemmer, n: usize) -> Vec<Strin
 mod tests {
     use std::collections::HashSet;
 
-    use crate::text_transform::n_gram_transform;
+    use crate::{inverted_index::Term, text_transform::n_gram_transform};
     use rust_stemmers::{Algorithm, Stemmer};
 
     fn get_stemmer() -> Stemmer {
         Stemmer::create(Algorithm::English)
+    }
+
+    fn get_stop_words() -> Vec<String> {
+        stop_words::get(stop_words::LANGUAGE::English)
     }
 
     fn to_hash_set<T>(vec: Vec<T>) -> HashSet<T>
@@ -34,12 +47,16 @@ mod tests {
     #[test]
     fn n_gram_transform_simple_sentence() {
         assert_eq!(
-            to_hash_set(n_gram_transform("The quick brown fox", &get_stemmer(), 1)),
+            to_hash_set(n_gram_transform(
+                "The quick brown fox",
+                &get_stemmer(),
+                &get_stop_words(),
+                1
+            )),
             to_hash_set(vec![
-                "the".to_string(),
-                "quick".to_string(),
-                "brown".to_string(),
-                "fox".to_string()
+                Term("quick".to_string()),
+                Term("brown".to_string()),
+                Term("fox".to_string())
             ])
         );
     }
@@ -50,15 +67,14 @@ mod tests {
             to_hash_set(n_gram_transform(
                 "Jumps over the lazy dog!123",
                 &get_stemmer(),
+                &get_stop_words(),
                 1
             )),
             to_hash_set(vec![
-                "jump".to_string(),
-                "over".to_string(),
-                "the".to_string(),
-                "lazi".to_string(),
-                "dog".to_string(),
-                "123".to_string()
+                Term("jump".to_string()),
+                Term("lazi".to_string()),
+                Term("dog".to_string()),
+                Term("123".to_string())
             ])
         );
     }
@@ -66,46 +82,58 @@ mod tests {
     #[test]
     fn n_gram_transform_with_special_characters() {
         assert_eq!(
-            to_hash_set(n_gram_transform("Rust 2023! @#%^&*", &get_stemmer(), 1)),
-            to_hash_set(vec!["rust".to_string(), "2023".to_string()])
+            to_hash_set(n_gram_transform(
+                "Rust 2023! @#%^&*",
+                &get_stemmer(),
+                &get_stop_words(),
+                1
+            )),
+            to_hash_set(vec![Term("rust".to_string()), Term("2023".to_string())])
         );
     }
 
     #[test]
     fn n_gram_transform_empty_string() {
         assert_eq!(
-            to_hash_set(n_gram_transform("", &get_stemmer(), 1)),
-            HashSet::<String>::new()
+            to_hash_set(n_gram_transform("", &get_stemmer(), &get_stop_words(), 1)),
+            HashSet::<Term>::new()
         );
     }
 
     #[test]
     fn n_gram_transform_bi_grams() {
         assert_eq!(
-            to_hash_set(n_gram_transform("The quick brown fox", &get_stemmer(), 2)),
+            to_hash_set(n_gram_transform(
+                "The quick brown fox",
+                &get_stemmer(),
+                &get_stop_words(),
+                2
+            )),
             to_hash_set(vec![
-                "the quick".to_string(),
-                "quick brown".to_string(),
-                "brown fox".to_string()
+                Term("quick brown".to_string()),
+                Term("brown fox".to_string())
             ])
         );
     }
 
     #[test]
     fn n_gram_transform_n_larger_than_words() {
-        let stemmer = get_stemmer();
         assert_eq!(
-            to_hash_set(n_gram_transform("The quick", &stemmer, 3)),
-            HashSet::<String>::new()
+            to_hash_set(n_gram_transform(
+                "The quick",
+                &get_stemmer(),
+                &get_stop_words(),
+                3
+            )),
+            HashSet::<Term>::new()
         );
     }
 
     #[test]
     fn n_gram_transform_empty_string_bi_gram() {
-        let stemmer = get_stemmer();
         assert_eq!(
-            to_hash_set(n_gram_transform("", &stemmer, 2)),
-            HashSet::<String>::new()
+            to_hash_set(n_gram_transform("", &get_stemmer(), &get_stop_words(), 2)),
+            HashSet::<Term>::new()
         );
     }
 }

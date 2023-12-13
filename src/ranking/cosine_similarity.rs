@@ -31,7 +31,20 @@ impl RankingAlgorithm for CosineSimilarity {
                     let tf = term_doc.term_freq as f64;
                     let score = tf * idf;
 
-                    let doc_magnitude = inverted_index.cosim_doc_magnitude(doc_path);
+                    let doc_magnitude = inverted_index
+                        .0
+                        .par_iter()
+                        .filter_map(|(_, doc_map)| {
+                            doc_map
+                                .par_iter()
+                                .find_any(|(path, _)| *path == doc_path)
+                                .map(|(_, term_doc)| {
+                                    let tf = term_doc.term_freq as f64;
+                                    tf * tf
+                                })
+                        })
+                        .sum::<f64>()
+                        .sqrt();
                     let cosine_similarity = score / (query_magnitude * doc_magnitude);
 
                     let mut scores_lock = scores.lock().unwrap();

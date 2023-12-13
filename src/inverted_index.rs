@@ -1,4 +1,6 @@
-use rayon::iter::{ParallelBridge, ParallelIterator};
+use rayon::iter::{
+    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
+};
 use std::{
     collections::HashMap,
     fs,
@@ -22,7 +24,7 @@ impl InvertedIndex {
     pub fn new<P, F>(root: P, transform_fn: F) -> Self
     where
         P: Into<PathBuf>,
-        F: Fn(&str) -> Vec<String> + Sync,
+        F: Fn(&str) -> Vec<Term> + Sync,
     {
         let index = Arc::new(Mutex::new(HashMap::new()));
         let root_path: PathBuf = root.into();
@@ -54,23 +56,29 @@ impl InvertedIndex {
         content: &str,
         transform_fn: &F,
     ) where
-        F: Fn(&str) -> Vec<String> + Sync,
+        F: Fn(&str) -> Vec<Term> + Sync,
     {
-        let document_length = content.split_whitespace().count();
         let terms = transform_fn(content);
+        transform_fn(content).extend(transform_fn(entry_path.to_str().unwrap()));
+
+        let document_length = terms.len();
+
+        let updates: Vec<_> = terms
+            .into_par_iter()
+            .map(|term| (term, entry_path.to_path_buf()))
+            .collect();
 
         let mut index_lock = index.lock().unwrap();
-
-        for term in terms {
-            let entry = index_lock.entry(Term(term)).or_default();
-            let term_document =
-                entry
-                    .entry(entry_path.to_path_buf())
-                    .or_insert_with(|| TermDocument {
-                        length: document_length,
-                        term_freq: 0,
-                    });
-            term_document.term_freq += 1;
+        for (term, path) in updates {
+            index_lock
+                .entry(term)
+                .or_default()
+                .entry(path)
+                .or_insert_with(|| TermDocument {
+                    length: document_length,
+                    term_freq: 0,
+                })
+                .term_freq += 1;
         }
     }
 }
@@ -83,8 +91,8 @@ impl InvertedIndex {
     pub fn avg_doc_length(&self) -> f64 {
         let total_document_length: usize = self
             .0
-            .values()
-            .map(|documents| documents.values().map(|d| d.length).sum::<usize>())
+            .par_iter()
+            .map(|(_, documents)| documents.par_iter().map(|(_, d)| d.length).sum::<usize>())
             .sum();
 
         total_document_length as f64 / self.num_docs() as f64
@@ -92,18 +100,5 @@ impl InvertedIndex {
 
     pub fn doc_freq(&self, term: &Term) -> usize {
         self.0.get(term).map_or(0, |documents| documents.len())
-    }
-
-    pub fn cosim_doc_magnitude(&self, doc_path: &PathBuf) -> f64 {
-        let mut square_sum = 0.0;
-
-        self.0.iter().for_each(|(_, doc_map)| {
-            if let Some(term_doc) = doc_map.get(doc_path) {
-                let tf = term_doc.term_freq as f64;
-                square_sum += tf * tf;
-            }
-        });
-
-        square_sum.sqrt()
     }
 }
