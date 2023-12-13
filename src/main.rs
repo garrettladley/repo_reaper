@@ -5,6 +5,7 @@ use notify::{event::ModifyKind, Config, EventKind, RecommendedWatcher, Recursive
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper::{
     cli::Args,
+    globals::Globals,
     inverted_index::InvertedIndex,
     ranking::RankingAlgorithm,
     text_transform::{n_gram_transform, Query},
@@ -13,33 +14,23 @@ use rust_stemmers::{Algorithm, Stemmer};
 
 use std::sync::Arc;
 
-fn get_stemmer() -> Arc<Stemmer> {
-    Arc::new(Stemmer::create(Algorithm::English))
-}
+fn main() -> notify::Result<()> {
+    let args = Args::parse();
 
-fn get_stop_words() -> Arc<HashSet<String>> {
-    Arc::new(
-        stop_words::get(stop_words::LANGUAGE::English)
+    let globals = Arc::new(Globals {
+        n_grams: args.n_grams,
+        stemmer: Stemmer::create(Algorithm::English),
+        stop_words: stop_words::get(stop_words::LANGUAGE::English)
             .par_iter()
             .map(|word| word.to_string())
-            .collect(),
-    )
-}
+            .collect::<HashSet<String>>(),
+    });
 
-fn main() -> notify::Result<()> {
-    let stop_words = get_stop_words();
-    let stop_words_clone = Arc::clone(&stop_words);
-
-    let stemmer = get_stemmer();
-    let stemmer_clone = Arc::clone(&stemmer);
-
-    let args = Args::parse();
+    let globals_clone = Arc::clone(&globals);
 
     let algo = args.ranking_algorithm;
 
-    let transformer = Arc::new(move |content: &str| {
-        n_gram_transform(content, &stemmer_clone, &stop_words_clone, args.n_grams)
-    });
+    let transformer = Arc::new(move |content: &str| n_gram_transform(content, &globals_clone));
     let transformer_clone = Arc::clone(&transformer);
 
     let path_clone = args.directory.clone();
@@ -104,13 +95,13 @@ fn main() -> notify::Result<()> {
 
         let ranking = algo.rank(
             &inverted_index.lock().unwrap(),
-            &Query::new(&query, &stemmer, &stop_words, args.n_grams),
+            &Query::new(&query, &globals),
             args.top_n,
         );
 
         match ranking {
             Some(ranking) => {
-                ranking.iter().for_each(|rank| {
+                ranking.0.iter().for_each(|rank| {
                     println!("{:?}", rank);
                 });
             }

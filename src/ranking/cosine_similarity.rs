@@ -4,18 +4,13 @@ use std::sync::{Arc, Mutex};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::inverted_index::InvertedIndex;
-use crate::ranking::{utils::idf, Rank, RankingAlgorithm};
+use crate::ranking::{utils::idf, Rank, Ranking, RankingAlgorithm};
 use crate::text_transform::Query;
 
 pub struct CosineSimilarity;
 
 impl RankingAlgorithm for CosineSimilarity {
-    fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &Query,
-        top_n: usize,
-    ) -> Option<Vec<Rank>> {
+    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
         let query_magnitude = query
             .0
             .par_iter()
@@ -76,7 +71,7 @@ impl RankingAlgorithm for CosineSimilarity {
 
         match scores.is_empty() {
             true => None,
-            false => Some(scores),
+            false => Some(Ranking(scores)),
         }
     }
 }

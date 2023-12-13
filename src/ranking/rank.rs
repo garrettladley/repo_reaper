@@ -8,6 +8,9 @@ use crate::ranking::{BM25HyperParams, CosineSimilarity, BM25, TFIDF};
 use super::bm25::get_configuration;
 
 #[derive(Debug)]
+pub struct Ranking(pub Vec<Rank>);
+
+#[derive(Debug)]
 pub struct Rank {
     pub doc_path: PathBuf,
     pub score: f64,
@@ -21,21 +24,11 @@ pub enum RankingAlgos {
 }
 
 pub trait RankingAlgorithm {
-    fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &Query,
-        top_n: usize,
-    ) -> Option<Vec<Rank>>;
+    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking>;
 }
 
 impl RankingAlgorithm for RankingAlgos {
-    fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &Query,
-        top_n: usize,
-    ) -> Option<Vec<Rank>> {
+    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
         let algo: Box<dyn RankingAlgorithm> = match self {
             RankingAlgos::CosineSimilarity => Box::new(CosineSimilarity),
             RankingAlgos::BM25(hyper_params) => Box::new(BM25 {

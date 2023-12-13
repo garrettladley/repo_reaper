@@ -5,18 +5,13 @@ use std::sync::{Arc, Mutex};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::inverted_index::InvertedIndex;
-use crate::ranking::{utils::idf, Rank, RankingAlgorithm};
+use crate::ranking::{utils::idf, Rank, Ranking, RankingAlgorithm};
 use crate::text_transform::Query;
 
 pub struct TFIDF;
 
 impl RankingAlgorithm for TFIDF {
-    fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &Query,
-        top_n: usize,
-    ) -> Option<Vec<Rank>> {
+    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
         let scores = Arc::new(Mutex::new(HashMap::new()));
 
         query.0.par_iter().for_each(|term| {
@@ -49,7 +44,7 @@ impl RankingAlgorithm for TFIDF {
 
         match scores.is_empty() {
             true => None,
-            false => Some(scores),
+            false => Some(Ranking(scores)),
         }
     }
 }

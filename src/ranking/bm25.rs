@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::inverted_index::InvertedIndex;
-use crate::ranking::{utils::idf, Rank, RankingAlgorithm};
+use crate::ranking::{utils::idf, Rank, Ranking, RankingAlgorithm};
 use crate::text_transform::Query;
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -30,12 +30,7 @@ pub struct BM25 {
 }
 
 impl RankingAlgorithm for BM25 {
-    fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &Query,
-        top_n: usize,
-    ) -> Option<Vec<Rank>> {
+    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
         let avgdl = inverted_index.avg_doc_length();
         let scores = Arc::new(Mutex::new(HashMap::new()));
 
@@ -73,7 +68,7 @@ impl RankingAlgorithm for BM25 {
 
         match scores.is_empty() {
             true => None,
-            false => Some(scores),
+            false => Some(Ranking(scores)),
         }
     }
 }
