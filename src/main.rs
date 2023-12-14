@@ -177,7 +177,7 @@ fn evaluate_training(args: &Args, globals: &Globals) {
         .collect();
 
     println!(
-        "Evaluation: {:?}",
+        "{:?}",
         TestSet {
             ranking_algorithm: Box::new(args.ranking_algorithm.clone()),
             queries
