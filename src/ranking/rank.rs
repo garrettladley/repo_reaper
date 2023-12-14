@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use chrono::Utc;
+
 use crate::{inverted_index::InvertedIndex, text_transform::Query};
 
 use crate::ranking::{BM25HyperParams, CosineSimilarity, BM25, TFIDF};
@@ -81,6 +83,11 @@ impl RankingAlgorithm for RankingAlgos {
                 query_log.insert("ranking".to_string(), "".to_string());
             }
         }
+
+        query_log.insert(
+            "timestamp".to_string(),
+            Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+        );
 
         let query_log = serde_json::to_string(&query_log).unwrap();
 
