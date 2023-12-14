@@ -34,9 +34,9 @@ impl InvertedIndex {
 
         WalkDir::new(root_path)
             .into_iter()
+            .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
-            .par_bridge()
             .for_each(|entry| {
                 let mut entry_path = entry.path().to_path_buf();
 
