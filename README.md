@@ -14,4 +14,4 @@
   </a>
 </div>
 
-An information retrieval system that uses natural language queries to find and return files from a repository.
+An information retrieval system that uses natural language queries to return relevant files from a repository.
