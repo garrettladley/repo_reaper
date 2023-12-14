@@ -108,7 +108,7 @@ impl FromStr for RankingAlgos {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "cosine" => Ok(RankingAlgos::CosineSimilarity),
+            "cosim" => Ok(RankingAlgos::CosineSimilarity),
             "bm25" => {
                 let hyper_params = get_configuration().unwrap();
 
