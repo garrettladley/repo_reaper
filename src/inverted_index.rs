@@ -50,10 +50,7 @@ impl InvertedIndex {
             })
             .reduce(HashMap::new, |mut accumulator, local_map| {
                 for (term, doc_map) in local_map {
-                    accumulator
-                        .entry(term)
-                        .or_insert_with(HashMap::new)
-                        .extend(doc_map);
+                    accumulator.entry(term).or_default().extend(doc_map);
                 }
                 accumulator
             });
