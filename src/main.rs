@@ -11,7 +11,6 @@ use repo_reaper::{
     },
     globals::Globals,
     inverted_index::InvertedIndex,
-    ranking::RankingAlgorithm,
     text_transform::{n_gram_transform, Query},
 };
 use rust_stemmers::{Algorithm, Stemmer};
@@ -179,7 +178,7 @@ fn evaluate_training(args: &Args, globals: &Globals) {
     println!(
         "{:?}",
         TestSet {
-            ranking_algorithm: Box::new(args.ranking_algorithm.clone()),
+            ranking_algorithm: *Box::new(args.ranking_algorithm.clone()),
             queries
         }
         .evaluate(&inverted_index, args.top_n)
