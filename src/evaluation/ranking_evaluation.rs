@@ -2,10 +2,10 @@ use std::{default, path::PathBuf};
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
-use crate::{inverted_index::InvertedIndex, ranking::RankingAlgorithm, text_transform::Query};
+use crate::{inverted_index::InvertedIndex, ranking::rank::RankingAlgo, text_transform::Query};
 
 pub struct TestSet {
-    pub ranking_algorithm: Box<dyn RankingAlgorithm + Send + Sync>,
+    pub ranking_algorithm: RankingAlgo,
     pub queries: Vec<TestQuery>,
 }
 
