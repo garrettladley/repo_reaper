@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::ranking::rank::RankingAlgos;
+use crate::ranking::rank::RankingAlgo;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -15,7 +15,7 @@ pub struct Args {
     pub n_grams: usize,
     /// Ranking algorithm
     #[clap(short, long, default_value = "bm25")]
-    pub ranking_algorithm: RankingAlgos,
+    pub ranking_algorithm: RankingAlgo,
     /// Number of results to return
     #[clap(short, long, default_value = "10")]
     pub top_n: usize,

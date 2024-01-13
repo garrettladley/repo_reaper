@@ -1,11 +1,8 @@
-use rayon::iter::{
-    IntoParallelIterator, IntoParallelRefIterator, ParallelBridge, ParallelIterator,
-};
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
 };
 use walkdir::WalkDir;
 
@@ -27,17 +24,15 @@ impl InvertedIndex {
         P: AsRef<Path> + Sync,
         F: Fn(&str) -> HashSet<Term> + Sync,
     {
-        let index = Arc::new(Mutex::new(HashMap::new()));
         let root_path: PathBuf = root.as_ref().to_owned();
-
         let drop_prefix = drop_prefix.map(|p| p.as_ref().to_owned());
 
-        WalkDir::new(root_path)
+        let index = WalkDir::new(root_path)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
-            .for_each(|entry| {
+            .map(|entry| {
                 let mut entry_path = entry.path().to_path_buf();
 
                 if let Some(ref prefix) = drop_prefix {
@@ -48,12 +43,19 @@ impl InvertedIndex {
                 }
 
                 if let Ok(content) = Self::read_document(&entry_path) {
-                    let index_clone = Arc::clone(&index);
-                    Self::process_document(&index_clone, &entry_path, &content, &transform_fn);
+                    Self::process_document(&entry_path, &content, &transform_fn)
+                } else {
+                    HashMap::new()
                 }
+            })
+            .reduce(HashMap::new, |mut accumulator, local_map| {
+                for (term, doc_map) in local_map {
+                    accumulator.entry(term).or_default().extend(doc_map);
+                }
+                accumulator
             });
 
-        InvertedIndex(Arc::try_unwrap(index).unwrap().into_inner().unwrap())
+        InvertedIndex(index)
     }
 
     fn read_document(entry_path: &PathBuf) -> Result<String, std::io::Error> {
@@ -61,35 +63,29 @@ impl InvertedIndex {
     }
 
     fn process_document<F>(
-        index: &Arc<Mutex<HashMap<Term, HashMap<PathBuf, TermDocument>>>>,
         entry_path: &Path,
         content: &str,
         transform_fn: &F,
-    ) where
+    ) -> HashMap<Term, HashMap<PathBuf, TermDocument>>
+    where
         F: Fn(&str) -> HashSet<Term> + Sync,
     {
         let terms = transform_fn(content);
-        transform_fn(content).extend(transform_fn(entry_path.to_str().unwrap()));
-
         let document_length = terms.len();
 
-        let updates: Vec<_> = terms
-            .into_par_iter()
-            .map(|term| (term, entry_path.to_path_buf()))
-            .collect();
+        let mut local_map: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
 
-        let mut index_lock = index.lock().unwrap();
-        updates.into_iter().for_each(|(term, path)| {
-            index_lock
-                .entry(term)
-                .or_default()
-                .entry(path)
-                .or_insert_with(|| TermDocument {
+        terms.into_iter().for_each(|term| {
+            local_map.entry(term).or_default().insert(
+                entry_path.to_path_buf(),
+                TermDocument {
                     length: document_length,
-                    term_freq: 0,
-                })
-                .term_freq += 1;
+                    term_freq: 1,
+                },
+            );
         });
+
+        local_map
     }
 }
 
@@ -117,24 +113,11 @@ impl InvertedIndex {
         F: Fn(&str) -> HashSet<Term> + Sync,
     {
         if let Ok(content) = Self::read_document(path) {
-            let index = Arc::new(Mutex::new(HashMap::new()));
-            let index_clone = Arc::clone(&index);
-
-            Self::process_document(&index_clone, path, &content, transform_fn);
-
-            let mut index_lock = index.lock().unwrap();
-
-            index_lock.drain().for_each(|(term, term_document)| {
-                self.0
-                    .entry(term)
-                    .or_default()
-                    .entry(path.clone())
-                    .or_insert_with(|| TermDocument {
-                        length: term_document.get(path).unwrap().length,
-                        term_freq: 0,
-                    })
-                    .term_freq += term_document.get(path).unwrap().term_freq;
-            });
+            Self::process_document(path, &content, transform_fn)
+                .into_iter()
+                .for_each(|(term, doc_map)| {
+                    self.0.entry(term).or_default().extend(doc_map);
+                });
         }
     }
 }

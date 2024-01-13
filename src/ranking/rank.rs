@@ -5,22 +5,23 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::Utc;
+use dashmap::DashMap;
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
+use crate::inverted_index::TermDocument;
 use crate::{inverted_index::InvertedIndex, text_transform::Query};
 
-use crate::ranking::{BM25HyperParams, CosineSimilarity, BM25, TFIDF};
-
-use super::bm25::get_configuration;
+use crate::ranking::{get_configuration, BM25HyperParams, CosineSimilarity, BM25, TFIDF};
 
 #[derive(Debug)]
-pub struct Ranking(pub Vec<Rank>);
+pub struct Scored(pub Vec<Score>);
 
-impl std::fmt::Display for Ranking {
+impl std::fmt::Display for Scored {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut output = String::new();
 
-        self.0.iter().for_each(|rank| {
-            output.push_str(&format!("{}\n", rank));
+        self.0.iter().for_each(|score| {
+            output.push_str(&format!("{}\n", score));
         });
 
         write!(f, "{}", output)
@@ -28,12 +29,12 @@ impl std::fmt::Display for Ranking {
 }
 
 #[derive(Debug)]
-pub struct Rank {
+pub struct Score {
     pub doc_path: PathBuf,
     pub score: f64,
 }
 
-impl std::fmt::Display for Rank {
+impl std::fmt::Display for Score {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -45,35 +46,81 @@ impl std::fmt::Display for Rank {
 }
 
 #[derive(Debug, Clone)]
-pub enum RankingAlgos {
+pub enum RankingAlgo {
     CosineSimilarity,
     BM25(BM25HyperParams),
     TFIDF,
 }
 
 pub trait RankingAlgorithm {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking>;
+    fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored;
 }
 
-impl RankingAlgorithm for RankingAlgos {
-    fn rank(&self, inverted_index: &InvertedIndex, query: &Query, top_n: usize) -> Option<Ranking> {
-        let algo: Box<dyn RankingAlgorithm> = match self {
-            RankingAlgos::CosineSimilarity => Box::new(CosineSimilarity),
-            RankingAlgos::BM25(hyper_params) => Box::new(BM25 {
-                hyper_params: BM25HyperParams {
-                    k1: hyper_params.k1,
-                    b: hyper_params.b,
-                },
+pub trait Scorer: Send + Sync {
+    fn score(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        documents: &HashMap<PathBuf, TermDocument>,
+        scores: &DashMap<PathBuf, f64>,
+    );
+}
+
+impl RankingAlgorithm for RankingAlgo {
+    fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored {
+        let scorer: Box<dyn Scorer> = match self {
+            RankingAlgo::CosineSimilarity => Box::new(CosineSimilarity),
+            RankingAlgo::BM25(hyper_params) => Box::new(BM25 {
+                hyper_params: hyper_params.to_owned(),
             }),
-            RankingAlgos::TFIDF => Box::new(TFIDF),
+            RankingAlgo::TFIDF => Box::new(TFIDF),
+        };
+
+        let scores = DashMap::new();
+
+        query.0.par_iter().for_each(|term| {
+            if let Some(documents) = inverted_index.0.get(term) {
+                scorer.score(inverted_index, query, documents, &scores)
+            }
+        });
+
+        Scored(
+            scores
+                .iter()
+                .par_bridge()
+                .map(|score| Score {
+                    doc_path: score.key().to_owned(),
+                    score: *score.value(),
+                })
+                .collect(),
+        )
+    }
+}
+
+impl RankingAlgo {
+    pub fn rank(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        top_n: usize,
+    ) -> Option<Scored> {
+        let ranking = if query.0.is_empty() {
+            None
+        } else {
+            let mut ranking = self.score(inverted_index, query).0;
+
+            ranking.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+            ranking.truncate(top_n);
+            match ranking.is_empty() {
+                true => None,
+                false => Some(Scored(ranking)),
+            }
         };
 
         let mut query_log = HashMap::new();
 
         query_log.insert("query".to_string(), query.to_string());
         query_log.insert("top_n".to_string(), top_n.to_string());
-
-        let ranking = algo.rank(inverted_index, query, top_n);
 
         match &ranking {
             Some(ranking) => {
@@ -83,6 +130,11 @@ impl RankingAlgorithm for RankingAlgos {
                 query_log.insert("ranking".to_string(), "".to_string());
             }
         }
+
+        query_log.insert(
+            "ranking_algo".to_string(),
+            format!("{:?}", self).to_string(),
+        );
 
         query_log.insert(
             "timestamp".to_string(),
@@ -103,18 +155,18 @@ impl RankingAlgorithm for RankingAlgos {
     }
 }
 
-impl FromStr for RankingAlgos {
+impl FromStr for RankingAlgo {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "cosim" => Ok(RankingAlgos::CosineSimilarity),
+            "cosim" => Ok(RankingAlgo::CosineSimilarity),
             "bm25" => {
                 let hyper_params = get_configuration().unwrap();
 
-                Ok(RankingAlgos::BM25(hyper_params))
+                Ok(RankingAlgo::BM25(hyper_params))
             }
-            "tfidf" => Ok(RankingAlgos::TFIDF),
+            "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }
     }
