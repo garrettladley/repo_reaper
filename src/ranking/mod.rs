@@ -4,7 +4,7 @@ pub mod rank;
 pub mod tf_idf;
 mod utils;
 
-pub use bm25::{BM25HyperParams, BM25};
+pub use bm25::{get_configuration, BM25HyperParams, BM25};
 pub use cosine_similarity::CosineSimilarity;
-pub use rank::{RankingAlgorithm, Score, Scored};
+pub use rank::{RankingAlgorithm, Score, Scored, Scorer};
 pub use tf_idf::TFIDF;

@@ -5,12 +5,13 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use chrono::Utc;
+use dashmap::DashMap;
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
+use crate::inverted_index::TermDocument;
 use crate::{inverted_index::InvertedIndex, text_transform::Query};
 
-use crate::ranking::{BM25HyperParams, CosineSimilarity, BM25, TFIDF};
-
-use super::bm25::get_configuration;
+use crate::ranking::{get_configuration, BM25HyperParams, CosineSimilarity, BM25, TFIDF};
 
 #[derive(Debug)]
 pub struct Scored(pub Vec<Score>);
@@ -19,8 +20,8 @@ impl std::fmt::Display for Scored {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut output = String::new();
 
-        self.0.iter().for_each(|rank| {
-            output.push_str(&format!("{}\n", rank));
+        self.0.iter().for_each(|score| {
+            output.push_str(&format!("{}\n", score));
         });
 
         write!(f, "{}", output)
@@ -55,9 +56,19 @@ pub trait RankingAlgorithm {
     fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored;
 }
 
+pub trait Scorer: Send + Sync {
+    fn score(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &Query,
+        documents: &HashMap<PathBuf, TermDocument>,
+        scores: &DashMap<PathBuf, f64>,
+    );
+}
+
 impl RankingAlgorithm for RankingAlgo {
     fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored {
-        let algo: Box<dyn RankingAlgorithm> = match self {
+        let scorer: Box<dyn Scorer> = match self {
             RankingAlgo::CosineSimilarity => Box::new(CosineSimilarity),
             RankingAlgo::BM25(hyper_params) => Box::new(BM25 {
                 hyper_params: hyper_params.to_owned(),
@@ -65,7 +76,24 @@ impl RankingAlgorithm for RankingAlgo {
             RankingAlgo::TFIDF => Box::new(TFIDF),
         };
 
-        algo.score(inverted_index, query)
+        let scores = DashMap::new();
+
+        query.0.par_iter().for_each(|term| {
+            if let Some(documents) = inverted_index.0.get(term) {
+                scorer.score(inverted_index, query, documents, &scores)
+            }
+        });
+
+        Scored(
+            scores
+                .iter()
+                .par_bridge()
+                .map(|score| Score {
+                    doc_path: score.key().to_owned(),
+                    score: *score.value(),
+                })
+                .collect(),
+        )
     }
 }
 
