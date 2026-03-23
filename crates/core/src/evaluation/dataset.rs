@@ -23,8 +23,7 @@ pub struct EvaluationData {
 
 impl EvaluationData {
     pub fn parse(raw: RawEvaluationData, config: &Config) -> Result<Self, EvalError> {
-        let repo =
-            Url::parse(&raw.repo).map_err(|_| EvalError::InvalidUrl(raw.repo.clone()))?;
+        let repo = Url::parse(&raw.repo).map_err(|_| EvalError::InvalidUrl(raw.repo.clone()))?;
 
         let examples: Result<Vec<_>, _> = raw
             .examples

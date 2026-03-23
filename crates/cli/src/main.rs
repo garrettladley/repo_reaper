@@ -193,8 +193,7 @@ fn log_query(
         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     );
 
-    let query_log =
-        serde_json::to_string(&query_log).context("failed to serialize query log")?;
+    let query_log = serde_json::to_string(&query_log).context("failed to serialize query log")?;
 
     let mut file = OpenOptions::new()
         .append(true)
@@ -212,8 +211,8 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     let file_content =
         fs::read_to_string("./data/train.json").context("failed to read training data")?;
 
-    let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
-        .context("failed to deserialize training JSON data")?;
+    let raw_evaluation_data: RawEvaluationData =
+        serde_json::from_str(&file_content).context("failed to deserialize training JSON data")?;
 
     let evaluation_data = EvaluationData::parse(raw_evaluation_data, config)
         .context("failed to parse evaluation data")?;
