@@ -6,14 +6,13 @@ use std::{
 };
 use walkdir::WalkDir;
 
+use crate::index::term::Term;
+
 #[derive(Debug)]
 pub struct TermDocument {
     pub length: usize,
     pub term_freq: usize,
 }
-
-#[derive(Hash, Eq, PartialEq, Debug, Clone)]
-pub struct Term(pub String);
 
 #[derive(Debug)]
 pub struct InvertedIndex(pub HashMap<Term, HashMap<PathBuf, TermDocument>>);

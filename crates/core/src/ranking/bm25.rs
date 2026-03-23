@@ -4,9 +4,10 @@ use std::path::PathBuf;
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-use crate::inverted_index::{InvertedIndex, TermDocument};
-use crate::ranking::{RankingAlgorithm, Score, Scored, Scorer, utils::idf};
-use crate::text_transform::Query;
+use crate::index::{InvertedIndex, TermDocument};
+use crate::query::Query;
+use crate::ranking::scorer::{RankingAlgorithm, Score, Scored, Scorer};
+use crate::ranking::utils::idf;
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct BM25HyperParams {

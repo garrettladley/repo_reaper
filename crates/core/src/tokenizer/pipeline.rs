@@ -2,17 +2,18 @@ use std::collections::HashSet;
 
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 
-use crate::{globals::Globals, inverted_index::Term};
+use crate::config::Config;
+use crate::index::Term;
 
-pub fn n_gram_transform(content: &str, globals: &Globals) -> HashSet<Term> {
+pub fn n_gram_transform(content: &str, config: &Config) -> HashSet<Term> {
     content
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-        .filter(|token| !globals.stop_words.contains(*token))
-        .map(|token| globals.stemmer.stem(token).to_string())
+        .filter(|token| !config.stop_words.contains(*token))
+        .map(|token| config.stemmer.stem(token).to_string())
         .collect::<Vec<_>>()
-        .par_windows(globals.n_grams)
+        .par_windows(config.n_grams)
         .map(|window| window.join(" "))
         .map(Term)
         .collect()
@@ -22,7 +23,9 @@ pub fn n_gram_transform(content: &str, globals: &Globals) -> HashSet<Term> {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::{globals::Globals, inverted_index::Term, text_transform::n_gram_transform};
+    use crate::config::Config;
+    use crate::index::Term;
+    use crate::tokenizer::n_gram_transform;
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
     use rust_stemmers::{Algorithm, Stemmer};
 
@@ -49,7 +52,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "The quick brown fox",
-                &Globals {
+                &Config {
                     n_grams: 1,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -68,7 +71,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "Jumps over the lazy dog!123",
-                &Globals {
+                &Config {
                     n_grams: 1,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -88,7 +91,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "Rust 2023! @#%^&*",
-                &Globals {
+                &Config {
                     n_grams: 1,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -103,7 +106,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "",
-                &Globals {
+                &Config {
                     n_grams: 1,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -118,7 +121,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "The quick brown fox",
-                &Globals {
+                &Config {
                     n_grams: 2,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -136,7 +139,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "The quick",
-                &Globals {
+                &Config {
                     n_grams: 3,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),
@@ -151,7 +154,7 @@ mod tests {
         assert_eq!(
             n_gram_transform(
                 "",
-                &Globals {
+                &Config {
                     n_grams: 2,
                     stemmer: get_stemmer(),
                     stop_words: get_stop_words(),

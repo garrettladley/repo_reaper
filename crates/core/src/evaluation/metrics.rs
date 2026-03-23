@@ -1,8 +1,10 @@
-use std::{default, path::PathBuf};
+use std::path::PathBuf;
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
-use crate::{inverted_index::InvertedIndex, ranking::rank::RankingAlgo, text_transform::Query};
+use crate::index::InvertedIndex;
+use crate::query::Query;
+use crate::ranking::RankingAlgo;
 
 pub struct TestSet {
     pub ranking_algorithm: RankingAlgo,
@@ -22,7 +24,7 @@ pub struct Evaluation {
     pub mrr: f64,
 }
 
-impl default::Default for Evaluation {
+impl Default for Evaluation {
     fn default() -> Self {
         Evaluation {
             precision: 0.0,
