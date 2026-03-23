@@ -23,7 +23,7 @@ pub struct InvertedIndex {
 }
 
 impl InvertedIndex {
-    fn from_postings(postings: HashMap<Term, HashMap<PathBuf, TermDocument>>) -> Self {
+    pub(crate) fn from_postings(postings: HashMap<Term, HashMap<PathBuf, TermDocument>>) -> Self {
         let mut unique_docs: HashMap<&PathBuf, usize> = HashMap::new();
         for doc_map in postings.values() {
             for (path, td) in doc_map {
