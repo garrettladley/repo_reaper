@@ -2,9 +2,7 @@ use std::path::PathBuf;
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 
-use crate::index::InvertedIndex;
-use crate::query::Query;
-use crate::ranking::RankingAlgo;
+use crate::{index::InvertedIndex, query::Query, ranking::RankingAlgo};
 
 pub struct TestSet {
     pub ranking_algorithm: RankingAlgo,

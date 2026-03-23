@@ -1,9 +1,10 @@
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
 };
+
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use walkdir::WalkDir;
 
 use crate::index::term::Term;

@@ -2,8 +2,7 @@ use std::collections::HashSet;
 
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 
-use crate::config::Config;
-use crate::index::Term;
+use crate::{config::Config, index::Term};
 
 pub fn n_gram_transform(content: &str, config: &Config) -> HashSet<Term> {
     content
@@ -23,11 +22,10 @@ pub fn n_gram_transform(content: &str, config: &Config) -> HashSet<Term> {
 mod tests {
     use std::collections::HashSet;
 
-    use crate::config::Config;
-    use crate::index::Term;
-    use crate::tokenizer::n_gram_transform;
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
     use rust_stemmers::{Algorithm, Stemmer};
+
+    use crate::{config::Config, index::Term, tokenizer::n_gram_transform};
 
     fn get_stemmer() -> Stemmer {
         Stemmer::create(Algorithm::English)

@@ -2,9 +2,7 @@ use std::collections::HashSet;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::config::Config;
-use crate::index::Term;
-use crate::tokenizer::n_gram_transform;
+use crate::{config::Config, index::Term, tokenizer::n_gram_transform};
 
 #[derive(Clone)]
 pub struct Query(pub HashSet<Term>);

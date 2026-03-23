@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use dashmap::DashMap;
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::error::RankingError;
-use crate::index::{InvertedIndex, TermDocument};
-use crate::query::Query;
-use crate::ranking::scorer::{RankingAlgorithm, Score, Scored, Scorer};
-use crate::ranking::utils::idf;
+use crate::{
+    error::RankingError,
+    index::{InvertedIndex, TermDocument},
+    query::Query,
+    ranking::{scorer::Scorer, utils::idf},
+};
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct BM25HyperParams {
@@ -54,43 +54,5 @@ impl Scorer for BM25 {
 
             *scores.entry(doc_path.clone()).or_insert(0.0) += score;
         });
-    }
-}
-
-impl RankingAlgorithm for BM25 {
-    fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored {
-        let avgdl = inverted_index.avg_doc_length();
-        let num_docs = inverted_index.num_docs();
-
-        let scores = DashMap::new();
-
-        query.0.par_iter().for_each(|term| {
-            if let Some(documents) = inverted_index.0.get(term) {
-                let idf = idf(num_docs, documents.len());
-
-                documents.par_iter().for_each(|(doc_path, term_doc)| {
-                    let tf = term_doc.term_freq as f64;
-                    let doc_length = term_doc.length as f64;
-                    let score = idf * (tf * (self.hyper_params.k1 + 1.0))
-                        / (tf
-                            + self.hyper_params.k1
-                                * (1.0 - self.hyper_params.b
-                                    + self.hyper_params.b * doc_length / avgdl));
-
-                    *scores.entry(doc_path.clone()).or_insert(0.0) += score;
-                });
-            }
-        });
-
-        Scored(
-            scores
-                .iter()
-                .par_bridge()
-                .map(|score| Score {
-                    doc_path: score.key().to_owned(),
-                    score: *score.value(),
-                })
-                .collect(),
-        )
     }
 }

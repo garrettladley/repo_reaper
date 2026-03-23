@@ -3,6 +3,9 @@ name = "repo-reaper-cli"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 repo-reaper-core = { path = "../core" }
 clap = { version = "^4.6", features = ["derive"] }
