@@ -275,4 +275,63 @@ mod tests {
 
         assert_eq!(index.avg_doc_length(), 10.0);
     }
+
+    fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn identity_transform(content: &str) -> HashMap<Term, u32> {
+        content
+            .split_whitespace()
+            .fold(HashMap::new(), |mut acc, word| {
+                *acc.entry(Term(word.to_string())).or_insert(0) += 1;
+                acc
+            })
+    }
+
+    #[test]
+    fn new_with_drop_prefix_indexes_files_and_strips_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "src/main.rs", "hello world");
+        write_temp_file(dir.path(), "src/lib.rs", "hello rust");
+
+        let index = InvertedIndex::new(dir.path(), identity_transform, Some(dir.path()));
+
+        assert_eq!(index.num_docs(), 2);
+
+        let hello_docs = index.get_postings(&Term("hello".to_string())).unwrap();
+        assert!(hello_docs.contains_key(&PathBuf::from("src/main.rs")));
+        assert!(hello_docs.contains_key(&PathBuf::from("src/lib.rs")));
+    }
+
+    #[test]
+    fn new_with_drop_prefix_stores_relative_paths_not_absolute() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "a.txt", "token");
+
+        let index = InvertedIndex::new(dir.path(), identity_transform, Some(dir.path()));
+
+        let docs = index.get_postings(&Term("token".to_string())).unwrap();
+        let paths: Vec<&PathBuf> = docs.keys().collect();
+
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], &PathBuf::from("a.txt"));
+    }
+
+    #[test]
+    fn new_without_drop_prefix_uses_full_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "a.txt", "token");
+
+        let index = InvertedIndex::new(dir.path(), identity_transform, None::<&std::path::Path>);
+
+        let docs = index.get_postings(&Term("token".to_string())).unwrap();
+        let path = docs.keys().next().unwrap();
+
+        assert!(path.is_absolute());
+    }
 }
