@@ -1,22 +1,20 @@
 [package]
 name = "repo_reaper"
 version = "0.1.0"
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+edition = "2024"
 
 [dependencies]
-clap = { version = "^4.4", features = ["derive"] }
+clap = { version = "^4.6", features = ["derive"] }
 anyhow = "^1.0"
-thiserror = "^1.0"
-walkdir = "^2.4.0"
-rust-stemmers = "^1.0"
-stop-words = "^0.8.0"
-config = { version = "^0.13", default-features = false, features = ["yaml"] }
+thiserror = "^2"
+walkdir = "^2.5"
+rust-stemmers = "^1.2"
+stop-words = "^0.10"
+config = { version = "^0.15", default-features = false, features = ["yaml"] }
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
-"rayon" = "^1.8"
-notify = "^6.1"
+rayon = "^1.11"
+notify = "^8"
 url = "^2.5"
-chrono = "^0.4"
-dashmap = "4.0.2"
+chrono = "^0.4.44"
+dashmap = "^6"
