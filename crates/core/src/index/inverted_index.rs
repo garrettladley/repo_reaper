@@ -52,17 +52,19 @@ impl InvertedIndex {
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
             .map(|entry| {
-                let mut entry_path = entry.path().to_path_buf();
+                let full_path = entry.path().to_path_buf();
 
-                if let Some(ref prefix) = drop_prefix {
-                    entry_path = entry_path
+                let index_path = if let Some(ref prefix) = drop_prefix {
+                    full_path
                         .strip_prefix(prefix)
-                        .unwrap_or(&entry_path)
-                        .to_owned();
-                }
+                        .unwrap_or(&full_path)
+                        .to_owned()
+                } else {
+                    full_path.clone()
+                };
 
-                if let Ok(content) = Self::read_document(&entry_path) {
-                    Self::process_document(&entry_path, &content, &transform_fn)
+                if let Ok(content) = Self::read_document(&full_path) {
+                    Self::process_document(&index_path, &content, &transform_fn)
                 } else {
                     HashMap::new()
                 }
