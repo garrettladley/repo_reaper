@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::str::FromStr;
+use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-use crate::index::{InvertedIndex, TermDocument};
-use crate::query::Query;
-use crate::ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration};
+use crate::{
+    index::{InvertedIndex, TermDocument},
+    query::Query,
+    ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration},
+};
 
 #[derive(Debug)]
 pub struct Scored(pub Vec<Score>);

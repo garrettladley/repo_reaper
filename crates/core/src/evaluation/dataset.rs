@@ -1,12 +1,9 @@
 use std::path::PathBuf;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-
 use url::Url;
 
-use crate::config::Config;
-use crate::error::EvalError;
-use crate::query::Query;
+use crate::{config::Config, error::EvalError, query::Query};
 
 #[derive(serde::Deserialize, Debug)]
 pub struct RawEvaluationData {

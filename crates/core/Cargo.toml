@@ -3,6 +3,9 @@ name = "repo-reaper-core"
 version = "0.1.0"
 edition = "2024"
 
+[lints]
+workspace = true
+
 [dependencies]
 walkdir = "^2.5"
 rust-stemmers = "^1.2"
