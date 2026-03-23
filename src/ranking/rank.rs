@@ -11,7 +11,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use crate::inverted_index::TermDocument;
 use crate::{inverted_index::InvertedIndex, text_transform::Query};
 
-use crate::ranking::{get_configuration, BM25HyperParams, CosineSimilarity, BM25, TFIDF};
+use crate::ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration};
 
 #[derive(Debug)]
 pub struct Scored(pub Vec<Score>);

@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 use crate::inverted_index::{InvertedIndex, TermDocument};
-use crate::ranking::{utils::idf, RankingAlgorithm, Score, Scored, Scorer};
+use crate::ranking::{RankingAlgorithm, Score, Scored, Scorer, utils::idf};
 use crate::text_transform::Query;
 
 pub struct TFIDF;
