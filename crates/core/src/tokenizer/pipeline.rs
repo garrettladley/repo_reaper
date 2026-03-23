@@ -1,10 +1,10 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 
 use crate::{config::Config, index::Term};
 
-pub fn n_gram_transform(content: &str, config: &Config) -> HashSet<Term> {
+pub fn n_gram_transform(content: &str, config: &Config) -> HashMap<Term, u32> {
     content
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
@@ -15,150 +15,101 @@ pub fn n_gram_transform(content: &str, config: &Config) -> HashSet<Term> {
         .par_windows(config.n_grams)
         .map(|window| window.join(" "))
         .map(Term)
-        .collect()
+        .fold(HashMap::new, |mut acc: HashMap<Term, u32>, term| {
+            *acc.entry(term).or_insert(0) += 1;
+            acc
+        })
+        .reduce(HashMap::new, |mut a, b| {
+            for (term, count) in b {
+                *a.entry(term).or_insert(0) += count;
+            }
+            a
+        })
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::HashMap;
 
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
     use rust_stemmers::{Algorithm, Stemmer};
 
     use crate::{config::Config, index::Term, tokenizer::n_gram_transform};
 
-    fn get_stemmer() -> Stemmer {
-        Stemmer::create(Algorithm::English)
+    fn test_config(n_grams: usize) -> Config {
+        Config {
+            n_grams,
+            stemmer: Stemmer::create(Algorithm::English),
+            stop_words: stop_words::get(stop_words::LANGUAGE::English)
+                .par_iter()
+                .map(|word| word.to_string())
+                .collect(),
+        }
     }
 
-    fn get_stop_words() -> HashSet<String> {
-        stop_words::get(stop_words::LANGUAGE::English)
-            .par_iter()
-            .map(|word| word.to_string())
+    fn term_map(pairs: &[(&str, u32)]) -> HashMap<Term, u32> {
+        pairs
+            .iter()
+            .map(|(s, c)| (Term(s.to_string()), *c))
             .collect()
     }
 
-    fn to_hash_set<T>(vec: Vec<T>) -> HashSet<T>
-    where
-        T: std::hash::Hash + std::cmp::Eq,
-    {
-        vec.into_iter().collect()
+    #[test]
+    fn unigrams_removes_stop_words_and_stems() {
+        let result = n_gram_transform("The quick brown fox", &test_config(1));
+        assert_eq!(result, term_map(&[("quick", 1), ("brown", 1), ("fox", 1)]));
     }
 
     #[test]
-    fn n_gram_transform_simple_sentence() {
+    fn unigrams_splits_on_punctuation_and_digits() {
+        let result = n_gram_transform("Jumps over the lazy dog!123", &test_config(1));
         assert_eq!(
-            n_gram_transform(
-                "The quick brown fox",
-                &Config {
-                    n_grams: 1,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            to_hash_set(vec![
-                Term("quick".to_string()),
-                Term("brown".to_string()),
-                Term("fox".to_string())
-            ])
+            result,
+            term_map(&[("jump", 1), ("lazi", 1), ("dog", 1), ("123", 1)])
         );
     }
 
     #[test]
-    fn n_gram_transform_with_punctuation() {
+    fn unigrams_strips_special_characters() {
+        let result = n_gram_transform("Rust 2023! @#%^&*", &test_config(1));
+        assert_eq!(result, term_map(&[("rust", 1), ("2023", 1)]));
+    }
+
+    #[test]
+    fn empty_input_returns_empty_map() {
+        assert_eq!(n_gram_transform("", &test_config(1)), HashMap::new());
+    }
+
+    #[test]
+    fn bigrams_produces_sliding_window_pairs() {
+        let result = n_gram_transform("The quick brown fox", &test_config(2));
+        assert_eq!(result, term_map(&[("quick brown", 1), ("brown fox", 1)]));
+    }
+
+    #[test]
+    fn ngram_larger_than_token_count_returns_empty() {
+        // "The quick" → 1 token after stop word removal → no 3-grams possible
         assert_eq!(
-            n_gram_transform(
-                "Jumps over the lazy dog!123",
-                &Config {
-                    n_grams: 1,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            to_hash_set(vec![
-                Term("jump".to_string()),
-                Term("lazi".to_string()),
-                Term("dog".to_string()),
-                Term("123".to_string())
-            ])
+            n_gram_transform("The quick", &test_config(3)),
+            HashMap::new()
         );
     }
 
     #[test]
-    fn n_gram_transform_with_special_characters() {
-        assert_eq!(
-            n_gram_transform(
-                "Rust 2023! @#%^&*",
-                &Config {
-                    n_grams: 1,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            to_hash_set(vec![Term("rust".to_string()), Term("2023".to_string())])
-        );
+    fn empty_input_bigrams_returns_empty() {
+        assert_eq!(n_gram_transform("", &test_config(2)), HashMap::new());
     }
 
     #[test]
-    fn n_gram_transform_empty_string() {
-        assert_eq!(
-            n_gram_transform(
-                "",
-                &Config {
-                    n_grams: 1,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            HashSet::<Term>::new()
-        );
+    fn repeated_words_produce_correct_frequencies() {
+        // "rust" x3 stems to "rust", "systems" stems to "system"
+        let result = n_gram_transform("rust rust rust systems", &test_config(1));
+        assert_eq!(result, term_map(&[("rust", 3), ("system", 1)]));
     }
 
     #[test]
-    fn n_gram_transform_bi_grams() {
-        assert_eq!(
-            n_gram_transform(
-                "The quick brown fox",
-                &Config {
-                    n_grams: 2,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            to_hash_set(vec![
-                Term("quick brown".to_string()),
-                Term("brown fox".to_string())
-            ])
-        );
-    }
-
-    #[test]
-    fn n_gram_transform_n_larger_than_words() {
-        assert_eq!(
-            n_gram_transform(
-                "The quick",
-                &Config {
-                    n_grams: 3,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            HashSet::<Term>::new()
-        );
-    }
-
-    #[test]
-    fn n_gram_transform_empty_string_bi_gram() {
-        assert_eq!(
-            n_gram_transform(
-                "",
-                &Config {
-                    n_grams: 2,
-                    stemmer: get_stemmer(),
-                    stop_words: get_stop_words(),
-                }
-            ),
-            HashSet::<Term>::new()
-        );
+    fn stop_words_excluded_before_frequency_counting() {
+        let result = n_gram_transform("the the the quick brown", &test_config(1));
+        assert_eq!(result, term_map(&[("quick", 1), ("brown", 1)]));
     }
 }

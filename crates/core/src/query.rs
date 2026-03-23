@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{config::Config, index::Term, tokenizer::n_gram_transform};
 
 #[derive(Clone)]
-pub struct Query(pub HashSet<Term>);
+pub struct Query(pub HashMap<Term, u32>);
 
 impl Query {
     pub fn new(query: &str, config: &Config) -> Self {
@@ -20,7 +20,7 @@ impl std::fmt::Display for Query {
             "{}",
             self.0
                 .par_iter()
-                .map(|term| term.0.clone())
+                .map(|(term, _)| term.0.clone())
                 .collect::<Vec<_>>()
                 .join(" ")
         )

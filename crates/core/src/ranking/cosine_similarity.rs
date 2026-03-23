@@ -24,7 +24,7 @@ impl Scorer for CosineSimilarity {
         let query_magnitude = query
             .0
             .par_iter()
-            .map(|term| {
+            .map(|(term, _)| {
                 let idf = idf(num_docs, inverted_index.doc_freq(term));
                 idf * idf
             })
