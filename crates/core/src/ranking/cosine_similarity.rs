@@ -42,8 +42,7 @@ impl Scorer for CosineSimilarity {
                 let score = tf * idf;
 
                 let doc_magnitude = inverted_index
-                    .0
-                    .iter()
+                    .postings_iter()
                     .par_bridge()
                     .filter_map(|(_, doc_map)| {
                         doc_map
