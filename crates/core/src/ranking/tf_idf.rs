@@ -32,3 +32,68 @@ impl Scorer for TFIDF {
             });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, path::PathBuf};
+
+    use dashmap::DashMap;
+
+    use super::TFIDF;
+    use crate::{
+        index::{InvertedIndex, Term, TermDocument},
+        query::Query,
+        ranking::scorer::Scorer,
+    };
+
+    fn index_from(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
+        let mut postings: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
+        for &(path, terms) in docs {
+            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
+            for &(term, freq) in terms {
+                postings.entry(Term(term.to_string())).or_default().insert(
+                    PathBuf::from(path),
+                    TermDocument {
+                        length: total_len,
+                        term_freq: freq as usize,
+                    },
+                );
+            }
+        }
+        InvertedIndex::from_postings(postings)
+    }
+
+    #[test]
+    fn higher_term_density_scores_higher() {
+        // density = term_freq / doc_length
+        let index = index_from(&[
+            ("dense.rs", &[("rust", 5), ("other", 1)]),
+            ("sparse.rs", &[("rust", 1), ("other", 10)]),
+        ]);
+        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let scores = DashMap::new();
+
+        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
+        TFIDF.score(&index, &query, docs, &scores);
+
+        let dense = *scores.get(&PathBuf::from("dense.rs")).unwrap();
+        let sparse = *scores.get(&PathBuf::from("sparse.rs")).unwrap();
+        assert!(
+            dense > sparse,
+            "higher term density should score higher: dense={dense}, sparse={sparse}"
+        );
+    }
+
+    #[test]
+    fn scores_are_positive() {
+        let index = index_from(&[("a.rs", &[("rust", 3)])]);
+        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let scores = DashMap::new();
+
+        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
+        TFIDF.score(&index, &query, docs, &scores);
+
+        let score = *scores.get(&PathBuf::from("a.rs")).unwrap();
+        assert!(score > 0.0, "TF-IDF score should be positive, got {score}");
+    }
+}

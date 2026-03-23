@@ -56,3 +56,97 @@ impl Scorer for BM25 {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, path::PathBuf};
+
+    use dashmap::DashMap;
+
+    use super::{BM25, BM25HyperParams};
+    use crate::{
+        index::{InvertedIndex, Term, TermDocument},
+        query::Query,
+        ranking::scorer::Scorer,
+    };
+
+    fn index_from(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
+        let mut postings: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
+        for &(path, terms) in docs {
+            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
+            for &(term, freq) in terms {
+                postings.entry(Term(term.to_string())).or_default().insert(
+                    PathBuf::from(path),
+                    TermDocument {
+                        length: total_len,
+                        term_freq: freq as usize,
+                    },
+                );
+            }
+        }
+        InvertedIndex::from_postings(postings)
+    }
+
+    fn bm25() -> BM25 {
+        BM25 {
+            hyper_params: BM25HyperParams { k1: 1.2, b: 0.75 },
+        }
+    }
+
+    #[test]
+    fn higher_tf_scores_higher() {
+        let index = index_from(&[
+            ("high.rs", &[("rust", 10), ("other", 1)]),
+            ("low.rs", &[("rust", 1), ("other", 1)]),
+        ]);
+        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let scores = DashMap::new();
+
+        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
+        bm25().score(&index, &query, docs, &scores);
+
+        let high = *scores.get(&PathBuf::from("high.rs")).unwrap();
+        let low = *scores.get(&PathBuf::from("low.rs")).unwrap();
+        assert!(high > low, "higher tf should score higher: {high} vs {low}");
+    }
+
+    #[test]
+    fn rarer_term_scores_higher_than_common() {
+        let index = index_from(&[
+            ("a.rs", &[("rare", 1), ("common", 1)]),
+            ("b.rs", &[("common", 1)]),
+            ("c.rs", &[("common", 1)]),
+        ]);
+        let query = Query(HashMap::from([
+            (Term("rare".to_string()), 1),
+            (Term("common".to_string()), 1),
+        ]));
+
+        let scores = DashMap::new();
+        for term in query.0.keys() {
+            if let Some(docs) = index.get_postings(term) {
+                bm25().score(&index, &query, docs, &scores);
+            }
+        }
+
+        let a = *scores.get(&PathBuf::from("a.rs")).unwrap();
+        let b = *scores.get(&PathBuf::from("b.rs")).unwrap();
+        assert!(
+            a > b,
+            "doc matching rare term should score higher: a={a}, b={b}"
+        );
+    }
+
+    #[test]
+    fn scores_are_positive() {
+        let index = index_from(&[("a.rs", &[("rust", 3)])]);
+        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let scores = DashMap::new();
+
+        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
+        bm25().score(&index, &query, docs, &scores);
+
+        let score = *scores.get(&PathBuf::from("a.rs")).unwrap();
+        assert!(score > 0.0, "BM25 score should be positive, got {score}");
+    }
+}
