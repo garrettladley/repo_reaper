@@ -15,9 +15,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper_core::{
     config::Config as ReaperConfig,
     evaluation::{
-        EvaluationData, RawEvaluationData, TestSet,
-        dataset::Relevance,
-        metrics::TestQuery,
+        EvaluationData, RawEvaluationData, TestSet, dataset::Relevance, metrics::TestQuery,
     },
     index::InvertedIndex,
     query::Query,
@@ -134,11 +132,7 @@ fn main() {
 
         let query = Query::new(&query, &config);
 
-        let ranking = algo.rank(
-            &inverted_index.lock().unwrap(),
-            &query,
-            args.top_n,
-        );
+        let ranking = algo.rank(&inverted_index.lock().unwrap(), &query, args.top_n);
 
         log_query(&query, &ranking, &algo, args.top_n);
 
@@ -173,10 +167,7 @@ fn log_query(
         }
     }
 
-    query_log.insert(
-        "ranking_algo".to_string(),
-        format!("{:?}", algo),
-    );
+    query_log.insert("ranking_algo".to_string(), format!("{:?}", algo));
 
     query_log.insert(
         "timestamp".to_string(),
