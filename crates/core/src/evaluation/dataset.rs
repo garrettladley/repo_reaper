@@ -4,9 +4,8 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use url::Url;
 
-use crate::globals::Globals;
-
-use crate::text_transform::Query;
+use crate::config::Config;
+use crate::query::Query;
 
 #[derive(serde::Deserialize, Debug)]
 pub struct RawEvaluationData {
@@ -22,14 +21,14 @@ pub struct EvaluationData {
 }
 
 impl EvaluationData {
-    pub fn parse(raw: RawEvaluationData, globals: &Globals) -> Self {
+    pub fn parse(raw: RawEvaluationData, config: &Config) -> Self {
         EvaluationData {
             repo: Url::parse(&raw.repo).unwrap(),
             commit: raw.commit,
             examples: raw
                 .examples
                 .into_par_iter()
-                .map(|example| Example::parse(example, globals))
+                .map(|example| Example::parse(example, config))
                 .collect(),
         }
     }
@@ -49,9 +48,9 @@ pub struct Example {
 }
 
 impl Example {
-    pub fn parse(raw: RawExample, globals: &Globals) -> Self {
+    pub fn parse(raw: RawExample, config: &Config) -> Self {
         Example {
-            query: Query::new(&raw.query, globals),
+            query: Query::new(&raw.query, config),
             narrative: raw.narrative,
             results: raw.results.into_par_iter().map(ResultData::from).collect(),
         }

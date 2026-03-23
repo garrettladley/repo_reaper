@@ -1,26 +1,53 @@
-use std::{collections::HashSet, fs, process::Command, sync::Mutex, thread};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{self, OpenOptions},
+    io::Write,
+    path::PathBuf,
+    process::Command,
+    sync::{Arc, Mutex},
+    thread,
+};
 
+use chrono::Utc;
 use clap::Parser;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use repo_reaper::{
-    cli::Args,
+use repo_reaper_core::{
+    config::Config as ReaperConfig,
     evaluation::{
-        EvaluationData, RawEvaluationData, TestSet, evaluation_data::Relevance,
-        ranking_evaluation::TestQuery,
+        EvaluationData, RawEvaluationData, TestSet, dataset::Relevance, metrics::TestQuery,
     },
-    globals::Globals,
-    inverted_index::InvertedIndex,
-    text_transform::{Query, n_gram_transform},
+    index::InvertedIndex,
+    query::Query,
+    ranking::RankingAlgo,
+    tokenizer::n_gram_transform,
 };
 use rust_stemmers::{Algorithm, Stemmer};
 
-use std::sync::Arc;
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// The directory to watch
+    #[clap(short, long, default_value = ".")]
+    directory: PathBuf,
+    /// n-grams
+    #[clap(short, long, default_value = "1")]
+    n_grams: usize,
+    /// Ranking algorithm
+    #[clap(short, long, default_value = "bm25")]
+    ranking_algorithm: RankingAlgo,
+    /// Number of results to return
+    #[clap(short, long, default_value = "10")]
+    top_n: usize,
+    /// Evaluate the training set
+    #[clap(short, long, default_value = "false")]
+    evaluate: bool,
+}
 
 fn main() {
     let args = Args::parse();
 
-    let globals = Arc::new(Globals {
+    let config = Arc::new(ReaperConfig {
         n_grams: args.n_grams,
         stemmer: Stemmer::create(Algorithm::English),
         stop_words: stop_words::get(stop_words::LANGUAGE::English)
@@ -30,16 +57,16 @@ fn main() {
     });
 
     if args.evaluate {
-        evaluate_training(&args, &globals);
+        evaluate_training(&args, &config);
 
         return;
     }
 
-    let globals_clone = Arc::clone(&globals);
+    let config_clone = Arc::clone(&config);
 
     let algo = args.ranking_algorithm;
 
-    let transformer = Arc::new(move |content: &str| n_gram_transform(content, &globals_clone));
+    let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
     let transformer_clone = Arc::clone(&transformer);
 
     let path_clone = args.directory.clone();
@@ -103,11 +130,11 @@ fn main() {
             break;
         }
 
-        let ranking = algo.rank(
-            &inverted_index.lock().unwrap(),
-            &Query::new(&query, &globals),
-            args.top_n,
-        );
+        let query = Query::new(&query, &config);
+
+        let ranking = algo.rank(&inverted_index.lock().unwrap(), &query, args.top_n);
+
+        log_query(&query, &ranking, &algo, args.top_n);
 
         match ranking {
             Some(ranking) => {
@@ -120,13 +147,51 @@ fn main() {
     }
 }
 
-fn evaluate_training(args: &Args, globals: &Globals) {
+fn log_query(
+    query: &Query,
+    ranking: &Option<repo_reaper_core::ranking::Scored>,
+    algo: &RankingAlgo,
+    top_n: usize,
+) {
+    let mut query_log = HashMap::new();
+
+    query_log.insert("query".to_string(), query.to_string());
+    query_log.insert("top_n".to_string(), top_n.to_string());
+
+    match ranking {
+        Some(ranking) => {
+            query_log.insert("ranking".to_string(), format!("{:?}", ranking));
+        }
+        None => {
+            query_log.insert("ranking".to_string(), "".to_string());
+        }
+    }
+
+    query_log.insert("ranking_algo".to_string(), format!("{:?}", algo));
+
+    query_log.insert(
+        "timestamp".to_string(),
+        Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    );
+
+    let query_log = serde_json::to_string(&query_log).unwrap();
+
+    let mut file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("./query_log.txt")
+        .unwrap();
+
+    file.write_all(query_log.as_bytes()).unwrap();
+}
+
+fn evaluate_training(args: &Args, config: &ReaperConfig) {
     let file_content = fs::read_to_string("./data/train.json").expect("Failed to read file");
 
     let raw_evaluation_data: RawEvaluationData =
         serde_json::from_str(&file_content).expect("Failed to deserialize JSON data");
 
-    let evaluation_data = EvaluationData::parse(raw_evaluation_data, globals);
+    let evaluation_data = EvaluationData::parse(raw_evaluation_data, config);
 
     let path = "./data/repo";
 
@@ -146,7 +211,7 @@ fn evaluate_training(args: &Args, globals: &Globals) {
 
     let inverted_index = InvertedIndex::new(
         path,
-        |content: &str| n_gram_transform(content, globals),
+        |content: &str| n_gram_transform(content, config),
         Some(path),
     );
 

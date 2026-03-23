@@ -1,16 +1,12 @@
 use std::collections::HashMap;
-use std::fs::OpenOptions;
-use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use chrono::Utc;
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
-use crate::inverted_index::TermDocument;
-use crate::{inverted_index::InvertedIndex, text_transform::Query};
-
+use crate::index::{InvertedIndex, TermDocument};
+use crate::query::Query;
 use crate::ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration};
 
 #[derive(Debug)]
@@ -104,54 +100,20 @@ impl RankingAlgo {
         query: &Query,
         top_n: usize,
     ) -> Option<Scored> {
-        let ranking = if query.0.is_empty() {
-            None
-        } else {
-            let mut ranking = self.score(inverted_index, query).0;
-
-            ranking.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-            ranking.truncate(top_n);
-            match ranking.is_empty() {
-                true => None,
-                false => Some(Scored(ranking)),
-            }
-        };
-
-        let mut query_log = HashMap::new();
-
-        query_log.insert("query".to_string(), query.to_string());
-        query_log.insert("top_n".to_string(), top_n.to_string());
-
-        match &ranking {
-            Some(ranking) => {
-                query_log.insert("ranking".to_string(), format!("{:?}", ranking));
-            }
-            None => {
-                query_log.insert("ranking".to_string(), "".to_string());
-            }
+        if query.0.is_empty() {
+            return None;
         }
 
-        query_log.insert(
-            "ranking_algo".to_string(),
-            format!("{:?}", self).to_string(),
-        );
+        let mut ranking = self.score(inverted_index, query).0;
 
-        query_log.insert(
-            "timestamp".to_string(),
-            Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-        );
+        ranking.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        ranking.truncate(top_n);
 
-        let query_log = serde_json::to_string(&query_log).unwrap();
-
-        let mut file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("./query_log.txt")
-            .unwrap();
-
-        file.write_all(query_log.as_bytes()).unwrap();
-
-        ranking
+        if ranking.is_empty() {
+            None
+        } else {
+            Some(Scored(ranking))
+        }
     }
 }
 

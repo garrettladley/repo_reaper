@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::inverted_index::{InvertedIndex, TermDocument};
-use crate::ranking::{RankingAlgorithm, Score, Scored, Scorer, utils::idf};
-use crate::text_transform::Query;
+use crate::index::{InvertedIndex, TermDocument};
+use crate::query::Query;
+use crate::ranking::scorer::{RankingAlgorithm, Score, Scored, Scorer};
+use crate::ranking::utils::idf;
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
@@ -29,48 +30,6 @@ impl Scorer for CosineSimilarity {
             .sum::<f64>()
             .sqrt();
 
-        let idf = idf(num_docs, documents.len());
-
-        documents
-            .iter()
-            .par_bridge()
-            .for_each(|(doc_path, term_doc)| {
-                let tf = term_doc.term_freq as f64;
-
-                let score = tf * idf;
-
-                let doc_magnitude = inverted_index
-                    .0
-                    .iter()
-                    .par_bridge()
-                    .filter_map(|(_, doc_map)| {
-                        doc_map
-                            .par_iter()
-                            .find_any(|(path, _)| *path == doc_path)
-                            .map(|(_, term_doc)| {
-                                let tf = term_doc.term_freq as f64;
-                                tf * tf
-                            })
-                    })
-                    .sum::<f64>()
-                    .sqrt();
-
-                let cosine_similarity = score / (query_magnitude * doc_magnitude);
-
-                *scores.entry(doc_path.to_owned()).or_insert(0.0) += cosine_similarity;
-            });
-    }
-}
-
-impl CosineSimilarity {
-    pub fn foo(
-        &self,
-        inverted_index: &InvertedIndex,
-        documents: &HashMap<PathBuf, TermDocument>,
-        scores: DashMap<PathBuf, f64>,
-        query_magnitude: f64,
-        num_docs: usize,
-    ) {
         let idf = idf(num_docs, documents.len());
 
         documents

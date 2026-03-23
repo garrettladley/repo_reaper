@@ -71,13 +71,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: target/release/repo_reaper
+            bin: target/release/repo-reaper-cli
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: target/release/repo_reaper.exe
+            bin: target/release/repo-reaper-cli.exe
           - os: macOS-latest
             target: aarch64-apple-darwin
-            bin: target/release/repo_reaper
+            bin: target/release/repo-reaper-cli
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -86,8 +86,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ runner.os }}-cli
-      - run: cargo build --release --manifest-path ./Cargo.toml --bin repo_reaper
+      - run: cargo build --release --bin repo-reaper-cli
       - uses: actions/upload-artifact@v4
         with:
-          name: repo_reaper-${{ matrix.target }}
+          name: repo-reaper-cli-${{ matrix.target }}
           path: ${{ matrix.bin }}
