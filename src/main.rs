@@ -1,17 +1,17 @@
 use std::{collections::HashSet, fs, process::Command, sync::Mutex, thread};
 
 use clap::Parser;
-use notify::{event::ModifyKind, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper::{
     cli::Args,
     evaluation::{
-        evaluation_data::Relevance, ranking_evaluation::TestQuery, EvaluationData,
-        RawEvaluationData, TestSet,
+        EvaluationData, RawEvaluationData, TestSet, evaluation_data::Relevance,
+        ranking_evaluation::TestQuery,
     },
     globals::Globals,
     inverted_index::InvertedIndex,
-    text_transform::{n_gram_transform, Query},
+    text_transform::{Query, n_gram_transform},
 };
 use rust_stemmers::{Algorithm, Stemmer};
 

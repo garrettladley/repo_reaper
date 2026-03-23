@@ -9,7 +9,7 @@ pub fn n_gram_transform(content: &str, globals: &Globals) -> HashSet<Term> {
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|s| !s.is_empty())
-        .filter(|token| !globals.stop_words.contains(&token.to_string()))
+        .filter(|token| !globals.stop_words.contains(*token))
         .map(|token| globals.stemmer.stem(token).to_string())
         .collect::<Vec<_>>()
         .par_windows(globals.n_grams)
