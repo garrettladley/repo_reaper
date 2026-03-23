@@ -70,7 +70,7 @@ impl RankingAlgorithm for RankingAlgo {
         let scores = DashMap::new();
 
         query.0.par_iter().for_each(|(term, _)| {
-            if let Some(documents) = inverted_index.0.get(term) {
+            if let Some(documents) = inverted_index.get_postings(term) {
                 scorer.score(inverted_index, query, documents, &scores)
             }
         });

@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 use walkdir::WalkDir;
 
 use crate::index::term::Term;
@@ -16,9 +16,28 @@ pub struct TermDocument {
 }
 
 #[derive(Debug)]
-pub struct InvertedIndex(pub HashMap<Term, HashMap<PathBuf, TermDocument>>);
+pub struct InvertedIndex {
+    postings: HashMap<Term, HashMap<PathBuf, TermDocument>>,
+    doc_count: usize,
+    total_doc_length: u64,
+}
 
 impl InvertedIndex {
+    fn from_postings(postings: HashMap<Term, HashMap<PathBuf, TermDocument>>) -> Self {
+        let mut unique_docs: HashMap<&PathBuf, usize> = HashMap::new();
+        for doc_map in postings.values() {
+            for (path, td) in doc_map {
+                unique_docs.entry(path).or_insert(td.length);
+            }
+        }
+
+        InvertedIndex {
+            doc_count: unique_docs.len(),
+            total_doc_length: unique_docs.values().map(|&l| l as u64).sum(),
+            postings,
+        }
+    }
+
     pub fn new<P, F>(root: P, transform_fn: F, drop_prefix: Option<P>) -> Self
     where
         P: AsRef<Path> + Sync,
@@ -27,7 +46,7 @@ impl InvertedIndex {
         let root_path: PathBuf = root.as_ref().to_owned();
         let drop_prefix = drop_prefix.map(|p| p.as_ref().to_owned());
 
-        let index = WalkDir::new(root_path)
+        let postings = WalkDir::new(root_path)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
@@ -55,7 +74,7 @@ impl InvertedIndex {
                 accumulator
             });
 
-        InvertedIndex(index)
+        Self::from_postings(postings)
     }
 
     fn read_document(entry_path: &PathBuf) -> Result<String, std::io::Error> {
@@ -90,22 +109,26 @@ impl InvertedIndex {
 }
 
 impl InvertedIndex {
+    pub fn get_postings(&self, term: &Term) -> Option<&HashMap<PathBuf, TermDocument>> {
+        self.postings.get(term)
+    }
+
+    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &HashMap<PathBuf, TermDocument>)> {
+        self.postings.iter()
+    }
+
     pub fn num_docs(&self) -> usize {
-        self.0.len()
+        self.doc_count
     }
 
     pub fn avg_doc_length(&self) -> f64 {
-        let total_document_length: usize = self
-            .0
-            .par_iter()
-            .map(|(_, documents)| documents.par_iter().map(|(_, d)| d.length).sum::<usize>())
-            .sum();
-
-        total_document_length as f64 / self.num_docs() as f64
+        self.total_doc_length as f64 / self.doc_count as f64
     }
 
     pub fn doc_freq(&self, term: &Term) -> usize {
-        self.0.get(term).map_or(0, |documents| documents.len())
+        self.postings
+            .get(term)
+            .map_or(0, |documents| documents.len())
     }
 
     pub fn update<F>(&mut self, path: &PathBuf, transform_fn: &F)
@@ -116,15 +139,30 @@ impl InvertedIndex {
             Self::process_document(path, &content, transform_fn)
                 .into_iter()
                 .for_each(|(term, doc_map)| {
-                    self.0.entry(term).or_default().extend(doc_map);
+                    self.postings.entry(term).or_default().extend(doc_map);
                 });
+            self.recalculate_stats();
         }
+    }
+
+    fn recalculate_stats(&mut self) {
+        let mut unique_docs: HashMap<&PathBuf, usize> = HashMap::new();
+        for doc_map in self.postings.values() {
+            for (path, td) in doc_map {
+                unique_docs.entry(path).or_insert(td.length);
+            }
+        }
+        self.doc_count = unique_docs.len();
+        self.total_doc_length = unique_docs.values().map(|&l| l as u64).sum();
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::Path};
+    use std::{
+        collections::HashMap,
+        path::{Path, PathBuf},
+    };
 
     use super::InvertedIndex;
     use crate::index::term::Term;
@@ -161,7 +199,6 @@ mod tests {
 
     #[test]
     fn document_length_is_sum_of_all_frequencies() {
-        // 3 + 1 = 4 total tokens
         let transform_fn =
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("rust", 3), ("system", 1)]) };
 
@@ -172,7 +209,6 @@ mod tests {
 
     #[test]
     fn document_length_consistent_across_all_terms() {
-        // 3 + 1 + 1 = 5 total tokens
         let transform_fn =
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("foo", 3), ("bar", 1), ("baz", 1)]) };
 
@@ -185,5 +221,56 @@ mod tests {
             .collect();
 
         assert!(lengths.iter().all(|&l| l == 5));
+    }
+
+    fn build_index(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
+        let mut postings: HashMap<Term, HashMap<PathBuf, super::TermDocument>> = HashMap::new();
+        for &(path, terms) in docs {
+            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
+            for &(term, freq) in terms {
+                postings.entry(Term(term.to_string())).or_default().insert(
+                    PathBuf::from(path),
+                    super::TermDocument {
+                        length: total_len,
+                        term_freq: freq as usize,
+                    },
+                );
+            }
+        }
+        InvertedIndex::from_postings(postings)
+    }
+
+    #[test]
+    fn num_docs_returns_unique_document_count() {
+        let index = build_index(&[
+            ("a.rs", &[("foo", 2), ("bar", 1)]),
+            ("b.rs", &[("bar", 1), ("baz", 3)]),
+        ]);
+
+        assert_eq!(index.num_docs(), 2);
+    }
+
+    #[test]
+    fn num_docs_single_document_with_many_terms() {
+        let index = build_index(&[("a.rs", &[("a", 1), ("b", 1), ("c", 1), ("d", 1)])]);
+
+        assert_eq!(index.num_docs(), 1);
+    }
+
+    #[test]
+    fn avg_doc_length_counts_each_document_once() {
+        let index = build_index(&[
+            ("a.rs", &[("foo", 2), ("bar", 1), ("baz", 2)]),
+            ("b.rs", &[("bar", 1), ("qux", 2)]),
+        ]);
+
+        assert_eq!(index.avg_doc_length(), 4.0);
+    }
+
+    #[test]
+    fn avg_doc_length_single_document() {
+        let index = build_index(&[("a.rs", &[("x", 3), ("y", 7)])]);
+
+        assert_eq!(index.avg_doc_length(), 10.0);
     }
 }
