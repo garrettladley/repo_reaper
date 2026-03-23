@@ -32,12 +32,7 @@ pub struct Score {
 
 impl std::fmt::Display for Score {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Path: {} Score: {}",
-            self.doc_path.to_str().unwrap(),
-            self.score
-        )
+        write!(f, "Path: {} Score: {}", self.doc_path.display(), self.score)
     }
 }
 
@@ -106,7 +101,7 @@ impl RankingAlgo {
 
         let mut ranking = self.score(inverted_index, query).0;
 
-        ranking.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        ranking.sort_by(|a, b| b.score.total_cmp(&a.score));
         ranking.truncate(top_n);
 
         if ranking.is_empty() {
@@ -124,7 +119,8 @@ impl FromStr for RankingAlgo {
         match s {
             "cosim" => Ok(RankingAlgo::CosineSimilarity),
             "bm25" => {
-                let hyper_params = get_configuration().unwrap();
+                let hyper_params =
+                    get_configuration().map_err(|e| format!("failed to load BM25 config: {e}"))?;
 
                 Ok(RankingAlgo::BM25(hyper_params))
             }

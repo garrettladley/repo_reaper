@@ -8,6 +8,7 @@ use std::{
     thread,
 };
 
+use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
 use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
@@ -44,7 +45,7 @@ struct Args {
     evaluate: bool,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
 
     let config = Arc::new(ReaperConfig {
@@ -57,9 +58,8 @@ fn main() {
     });
 
     if args.evaluate {
-        evaluate_training(&args, &config);
-
-        return;
+        evaluate_training(&args, &config)?;
+        return Ok(());
     }
 
     let config_clone = Arc::clone(&config);
@@ -71,7 +71,7 @@ fn main() {
 
     let path_clone = args.directory.clone();
 
-    println!("Indexing files in {}", args.directory.to_str().unwrap());
+    println!("Indexing files in {}", args.directory.display());
 
     let inverted_index = Arc::new(Mutex::new(InvertedIndex::new(
         args.directory,
@@ -81,7 +81,10 @@ fn main() {
 
     println!(
         "Successfully indexed {} files",
-        inverted_index.lock().unwrap().num_docs()
+        inverted_index
+            .lock()
+            .expect("index lock poisoned")
+            .num_docs()
     );
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -91,13 +94,21 @@ fn main() {
     let inverted_index_clone_for_thread = Arc::clone(&inverted_index);
 
     thread::spawn(move || {
-        let mut watcher = RecommendedWatcher::new(tx, Config::default()).unwrap();
-        watcher
-            .watch(path_clone.as_ref(), RecursiveMode::Recursive)
-            .unwrap();
+        let mut watcher = match RecommendedWatcher::new(tx, Config::default()) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("failed to create file watcher: {e}");
+                return;
+            }
+        };
+
+        if let Err(e) = watcher.watch(path_clone.as_ref(), RecursiveMode::Recursive) {
+            eprintln!("failed to watch directory: {e}");
+            return;
+        }
 
         loop {
-            match rx_clone.lock().unwrap().recv() {
+            match rx_clone.lock().expect("rx lock poisoned").recv() {
                 Ok(event) => match event {
                     Ok(event) => match event.kind {
                         EventKind::Modify(ModifyKind::Metadata(_)) => continue,
@@ -106,7 +117,7 @@ fn main() {
                                 let path_clone = path.clone();
                                 inverted_index_clone_for_thread
                                     .lock()
-                                    .unwrap()
+                                    .expect("index lock poisoned")
                                     .update(&path_clone, &transformer.as_ref());
                             });
                         }
@@ -124,7 +135,9 @@ fn main() {
         println!("Enter a query: ");
 
         let mut query = String::new();
-        std::io::stdin().read_line(&mut query).unwrap();
+        std::io::stdin()
+            .read_line(&mut query)
+            .context("failed to read from stdin")?;
 
         if query.trim() == "exit" {
             break;
@@ -132,9 +145,13 @@ fn main() {
 
         let query = Query::new(&query, &config);
 
-        let ranking = algo.rank(&inverted_index.lock().unwrap(), &query, args.top_n);
+        let ranking = algo.rank(
+            &inverted_index.lock().expect("index lock poisoned"),
+            &query,
+            args.top_n,
+        );
 
-        log_query(&query, &ranking, &algo, args.top_n);
+        log_query(&query, &ranking, &algo, args.top_n)?;
 
         match ranking {
             Some(ranking) => {
@@ -145,6 +162,8 @@ fn main() {
             None => println!("No results found :("),
         }
     }
+
+    Ok(())
 }
 
 fn log_query(
@@ -152,7 +171,7 @@ fn log_query(
     ranking: &Option<repo_reaper_core::ranking::Scored>,
     algo: &RankingAlgo,
     top_n: usize,
-) {
+) -> Result<()> {
     let mut query_log = HashMap::new();
 
     query_log.insert("query".to_string(), query.to_string());
@@ -174,24 +193,30 @@ fn log_query(
         Utc::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     );
 
-    let query_log = serde_json::to_string(&query_log).unwrap();
+    let query_log =
+        serde_json::to_string(&query_log).context("failed to serialize query log")?;
 
     let mut file = OpenOptions::new()
         .append(true)
         .create(true)
         .open("./query_log.txt")
-        .unwrap();
+        .context("failed to open query log file")?;
 
-    file.write_all(query_log.as_bytes()).unwrap();
+    file.write_all(query_log.as_bytes())
+        .context("failed to write query log")?;
+
+    Ok(())
 }
 
-fn evaluate_training(args: &Args, config: &ReaperConfig) {
-    let file_content = fs::read_to_string("./data/train.json").expect("Failed to read file");
+fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
+    let file_content =
+        fs::read_to_string("./data/train.json").context("failed to read training data")?;
 
-    let raw_evaluation_data: RawEvaluationData =
-        serde_json::from_str(&file_content).expect("Failed to deserialize JSON data");
+    let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
+        .context("failed to deserialize training JSON data")?;
 
-    let evaluation_data = EvaluationData::parse(raw_evaluation_data, config);
+    let evaluation_data = EvaluationData::parse(raw_evaluation_data, config)
+        .context("failed to parse evaluation data")?;
 
     let path = "./data/repo";
 
@@ -200,14 +225,14 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) {
         .arg(evaluation_data.repo.to_string())
         .arg(path)
         .output()
-        .expect("Failed to execute command");
+        .context("failed to execute git clone")?;
 
     Command::new("git")
         .arg("checkout")
         .arg(evaluation_data.commit)
         .current_dir(path)
         .output()
-        .expect("Failed to execute command");
+        .context("failed to execute git checkout")?;
 
     let inverted_index = InvertedIndex::new(
         path,
@@ -243,9 +268,11 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) {
     println!(
         "{:?}",
         TestSet {
-            ranking_algorithm: *Box::new(args.ranking_algorithm.clone()),
+            ranking_algorithm: args.ranking_algorithm.clone(),
             queries
         }
         .evaluate(&inverted_index, args.top_n)
     );
+
+    Ok(())
 }
