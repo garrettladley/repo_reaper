@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
 
 jobs:
   test:
@@ -18,7 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-test
+      - run: cargo test --workspace
 
   fmt:
     name: Format
@@ -38,20 +42,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-clippy
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-  check:
-    name: Check
+  deny:
+    name: Deny
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ runner.os }}-check
-      - run: cargo check
-        env:
-          RUSTFLAGS: -D warnings
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
 
   coverage:
     name: Code Coverage
@@ -59,8 +61,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo install cargo-tarpaulin
-      - run: cargo tarpaulin --verbose --workspace
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-coverage
+      - run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: lcov.info
+
+  bench:
+    name: Bench
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ runner.os }}-bench
+      - run: cargo bench --workspace --no-run
 
   cli:
     name: CLI Binaries

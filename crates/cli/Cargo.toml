@@ -2,9 +2,10 @@
 name = "repo-reaper-cli"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
-repo-reaper-core = { path = "../core" }
+repo-reaper-core = { path = "../core", version = "0.1.0" }
 clap = { version = "^4.6", features = ["derive"] }
 anyhow = "^1.0"
 notify = "^8"
