@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
+use crate::error::RankingError;
 use crate::index::{InvertedIndex, TermDocument};
 use crate::query::Query;
 use crate::ranking::scorer::{RankingAlgorithm, Score, Scored, Scorer};
@@ -15,15 +16,15 @@ pub struct BM25HyperParams {
     pub b: f64,
 }
 
-pub fn get_configuration() -> Result<BM25HyperParams, config::ConfigError> {
-    let base_path = std::env::current_dir().expect("Failed to determine the current directory");
+pub fn get_configuration() -> Result<BM25HyperParams, RankingError> {
+    let base_path = std::env::current_dir().map_err(RankingError::CurrentDir)?;
     let configuration_directory = base_path.join("configuration");
 
     let settings = config::Config::builder()
         .add_source(config::File::from(configuration_directory.join("bm25.yml")))
         .build()?;
 
-    settings.try_deserialize::<BM25HyperParams>()
+    Ok(settings.try_deserialize::<BM25HyperParams>()?)
 }
 
 pub struct BM25 {

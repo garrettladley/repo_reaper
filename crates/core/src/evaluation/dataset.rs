@@ -5,6 +5,7 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use url::Url;
 
 use crate::config::Config;
+use crate::error::EvalError;
 use crate::query::Query;
 
 #[derive(serde::Deserialize, Debug)]
@@ -21,16 +22,20 @@ pub struct EvaluationData {
 }
 
 impl EvaluationData {
-    pub fn parse(raw: RawEvaluationData, config: &Config) -> Self {
-        EvaluationData {
-            repo: Url::parse(&raw.repo).unwrap(),
+    pub fn parse(raw: RawEvaluationData, config: &Config) -> Result<Self, EvalError> {
+        let repo = Url::parse(&raw.repo).map_err(|_| EvalError::InvalidUrl(raw.repo.clone()))?;
+
+        let examples: Result<Vec<_>, _> = raw
+            .examples
+            .into_par_iter()
+            .map(|example| Example::parse(example, config))
+            .collect();
+
+        Ok(EvaluationData {
+            repo,
             commit: raw.commit,
-            examples: raw
-                .examples
-                .into_par_iter()
-                .map(|example| Example::parse(example, config))
-                .collect(),
-        }
+            examples: examples?,
+        })
     }
 }
 
@@ -48,12 +53,18 @@ pub struct Example {
 }
 
 impl Example {
-    pub fn parse(raw: RawExample, config: &Config) -> Self {
-        Example {
+    pub fn parse(raw: RawExample, config: &Config) -> Result<Self, EvalError> {
+        let results: Result<Vec<_>, _> = raw
+            .results
+            .into_par_iter()
+            .map(ResultData::try_from)
+            .collect();
+
+        Ok(Example {
             query: Query::new(&raw.query, config),
             narrative: raw.narrative,
-            results: raw.results.into_par_iter().map(ResultData::from).collect(),
-        }
+            results: results?,
+        })
     }
 }
 
@@ -71,16 +82,21 @@ pub struct ResultData {
     pub relevance: Relevance,
 }
 
-impl From<RawResultData> for ResultData {
-    fn from(raw: RawResultData) -> Self {
-        ResultData {
+impl TryFrom<RawResultData> for ResultData {
+    type Error = EvalError;
+
+    fn try_from(raw: RawResultData) -> Result<Self, Self::Error> {
+        let relevance = if raw.relevant {
+            Relevance::Relevant(raw.rank.ok_or(EvalError::MissingRank)?)
+        } else {
+            Relevance::NonRelevant
+        };
+
+        Ok(ResultData {
             path: PathBuf::from(raw.path),
             content: raw.content,
-            relevance: match raw.relevant {
-                true => Relevance::Relevant(raw.rank.unwrap()),
-                false => Relevance::NonRelevant,
-            },
-        }
+            relevance,
+        })
     }
 }
 
