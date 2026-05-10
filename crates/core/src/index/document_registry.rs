@@ -52,6 +52,7 @@ pub trait DocumentCatalog {
     fn doc_id(&self, path: &Path) -> Option<DocId>;
     fn len(&self) -> usize;
     fn is_empty(&self) -> bool;
+    fn total_token_length(&self) -> u64;
     fn avg_doc_length(&self) -> f64;
 }
 
@@ -113,6 +114,10 @@ impl DocumentCatalog for DocumentRegistry {
 
     fn is_empty(&self) -> bool {
         self.documents.is_empty()
+    }
+
+    fn total_token_length(&self) -> u64 {
+        self.total_token_length
     }
 
     fn avg_doc_length(&self) -> f64 {

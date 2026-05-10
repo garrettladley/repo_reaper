@@ -22,7 +22,7 @@ use repo_reaper_core::{
         EvaluationCorpus, EvaluationData, RawEvaluationData, TestSet, dataset::Relevance,
         metrics::TestQuery,
     },
-    index::InvertedIndex,
+    index::{CorpusStats, InvertedIndex},
     query::AnalyzedQuery,
     ranking::RankingAlgo,
     tokenizer::n_gram_transform,
@@ -53,6 +53,9 @@ struct Args {
     /// Evaluation data JSON
     #[clap(long, default_value = "./data/train.json")]
     eval_data: PathBuf,
+    /// Print corpus statistics for the indexed directory and exit
+    #[clap(long, default_value = "false")]
+    stats: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -102,6 +105,15 @@ fn main() -> Result<()> {
             .map_err(|_| anyhow!("index lock poisoned"))?
             .num_docs()
     );
+
+    if args.stats {
+        let stats = inverted_index
+            .lock()
+            .map_err(|_| anyhow!("index lock poisoned"))?
+            .corpus_stats(10);
+        print_corpus_stats(&stats);
+        return Ok(());
+    }
 
     let (tx, rx) = std::sync::mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
@@ -200,6 +212,26 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_corpus_stats(stats: &CorpusStats) {
+    println!("documents: {}", stats.document_count);
+    println!("total tokens: {}", stats.total_token_count);
+    println!("vocabulary size: {}", stats.vocabulary_size);
+    println!("singleton terms: {}", stats.singleton_term_count);
+    println!("high-frequency terms:");
+
+    if stats.high_frequency_terms.is_empty() {
+        println!("  none");
+        return;
+    }
+
+    for summary in &stats.high_frequency_terms {
+        println!(
+            "  {}: collection_frequency={}, document_frequency={}",
+            summary.term, summary.collection_frequency, summary.document_frequency
+        );
+    }
 }
 
 fn log_query(
