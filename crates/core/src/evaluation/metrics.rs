@@ -7,7 +7,7 @@ use std::{
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    evaluation::dataset::QueryShape,
+    evaluation::dataset::{EvidenceSpan, QueryShape},
     index::InvertedIndex,
     query::AnalyzedQuery,
     ranking::{RankingAlgo, Score},
@@ -22,7 +22,14 @@ pub struct TestQuery {
     pub query: AnalyzedQuery,
     pub query_shape: QueryShape,
     pub relevant_docs: Vec<PathBuf>,
+    pub groundedness_results: Vec<GroundednessResult>,
     pub evidence_span_count: usize,
+}
+
+pub struct GroundednessResult {
+    pub path: PathBuf,
+    pub relevant: bool,
+    pub evidence: Vec<EvidenceSpan>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -139,12 +146,67 @@ pub struct EvidenceReport {
     pub status: EvidenceReportStatus,
     pub queries_with_evidence: usize,
     pub total_evidence_spans: usize,
+    #[serde(default)]
+    pub groundedness: GroundednessEvaluation,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceReportStatus {
     NotScored,
+    Scored,
+}
+
+impl fmt::Display for EvidenceReportStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EvidenceReportStatus::NotScored => write!(f, "not_scored"),
+            EvidenceReportStatus::Scored => write!(f, "scored"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+pub struct GroundednessEvaluation {
+    pub k: usize,
+    pub expected_evidence: usize,
+    pub cited_evidence: usize,
+    pub matching_evidence: usize,
+    pub grounded_citations: usize,
+    pub total_citations: usize,
+    pub highlight_recall: f64,
+    pub highlight_precision: f64,
+    pub citation_precision: f64,
+}
+
+impl GroundednessEvaluation {
+    pub fn zero(k: usize) -> Self {
+        GroundednessEvaluation {
+            k,
+            ..GroundednessEvaluation::default()
+        }
+    }
+
+    fn from_counts(
+        k: usize,
+        expected_evidence: usize,
+        cited_evidence: usize,
+        matching_evidence: usize,
+        grounded_citations: usize,
+        total_citations: usize,
+    ) -> Self {
+        GroundednessEvaluation {
+            k,
+            expected_evidence,
+            cited_evidence,
+            matching_evidence,
+            grounded_citations,
+            total_citations,
+            highlight_recall: ratio(matching_evidence, expected_evidence),
+            highlight_precision: ratio(matching_evidence, cited_evidence),
+            citation_precision: ratio(grounded_citations, total_citations),
+        }
+    }
 }
 
 pub fn evaluate_query_at_k(
@@ -179,6 +241,97 @@ pub fn evaluate_query_at_k(
             relevant_docs.len(),
             k,
         ),
+    }
+}
+
+pub fn evaluate_groundedness_at_k(
+    ranked_docs: &[Score],
+    results: &[GroundednessResult],
+    k: usize,
+) -> GroundednessEvaluation {
+    if k == 0 {
+        return GroundednessEvaluation::zero(k);
+    }
+
+    let expected_evidence = expected_evidence(results);
+    if expected_evidence.is_empty() {
+        return GroundednessEvaluation::zero(k);
+    }
+
+    let cutoff_docs = &ranked_docs[..ranked_docs.len().min(k)];
+    let cited_evidence = cited_evidence(cutoff_docs, results);
+    let matching_evidence = cited_evidence.intersection(&expected_evidence).count();
+
+    let grounded_citations = cutoff_docs
+        .iter()
+        .filter(|doc| {
+            results.iter().any(|result| {
+                result.path == doc.doc_path
+                    && result.evidence.iter().any(|span| {
+                        expected_evidence.contains(&(result.path.clone(), span.clone()))
+                    })
+            })
+        })
+        .count();
+    let total_citations = cutoff_docs
+        .iter()
+        .filter(|doc| {
+            results
+                .iter()
+                .any(|result| result.path == doc.doc_path && !result.evidence.is_empty())
+        })
+        .count();
+
+    GroundednessEvaluation::from_counts(
+        k,
+        expected_evidence.len(),
+        cited_evidence.len(),
+        matching_evidence,
+        grounded_citations,
+        total_citations,
+    )
+}
+
+fn expected_evidence(results: &[GroundednessResult]) -> HashSet<(PathBuf, EvidenceSpan)> {
+    results
+        .iter()
+        .filter(|result| result.relevant)
+        .flat_map(|result| {
+            result
+                .evidence
+                .iter()
+                .cloned()
+                .map(|span| (result.path.clone(), span))
+        })
+        .collect()
+}
+
+fn cited_evidence(
+    ranked_docs: &[Score],
+    results: &[GroundednessResult],
+) -> HashSet<(PathBuf, EvidenceSpan)> {
+    ranked_docs
+        .iter()
+        .flat_map(|doc| {
+            results
+                .iter()
+                .filter(move |result| result.path == doc.doc_path)
+                .flat_map(|result| {
+                    result
+                        .evidence
+                        .iter()
+                        .cloned()
+                        .map(|span| (result.path.clone(), span))
+                })
+        })
+        .collect()
+}
+
+fn ratio(numerator: usize, denominator: usize) -> f64 {
+    if denominator == 0 {
+        0.0
+    } else {
+        numerator as f64 / denominator as f64
     }
 }
 
@@ -271,6 +424,37 @@ pub fn average_evaluations(evaluations: &[Evaluation]) -> Evaluation {
     }
 }
 
+pub fn aggregate_groundedness(evaluations: &[GroundednessEvaluation]) -> GroundednessEvaluation {
+    if evaluations.is_empty() {
+        return GroundednessEvaluation::default();
+    }
+
+    let counts = evaluations
+        .iter()
+        .fold(GroundednessEvaluation::zero(0), |acc, evaluation| {
+            GroundednessEvaluation {
+                k: acc.k.max(evaluation.k),
+                expected_evidence: acc.expected_evidence + evaluation.expected_evidence,
+                cited_evidence: acc.cited_evidence + evaluation.cited_evidence,
+                matching_evidence: acc.matching_evidence + evaluation.matching_evidence,
+                grounded_citations: acc.grounded_citations + evaluation.grounded_citations,
+                total_citations: acc.total_citations + evaluation.total_citations,
+                highlight_recall: 0.0,
+                highlight_precision: 0.0,
+                citation_precision: 0.0,
+            }
+        });
+
+    GroundednessEvaluation::from_counts(
+        counts.k,
+        counts.expected_evidence,
+        counts.cited_evidence,
+        counts.matching_evidence,
+        counts.grounded_citations,
+        counts.total_citations,
+    )
+}
+
 fn evaluation_slices(evaluations: &[(QueryShape, Evaluation)]) -> Vec<EvaluationSlice> {
     let mut by_shape: BTreeMap<QueryShape, Vec<Evaluation>> = BTreeMap::new();
 
@@ -304,6 +488,19 @@ impl fmt::Display for Evaluation {
     }
 }
 
+impl fmt::Display for GroundednessEvaluation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "highlight recall@{k}: {highlight_recall:.4}\nhighlight precision@{k}: {highlight_precision:.4}\ncitation precision@{k}: {citation_precision:.4}",
+            k = self.k,
+            highlight_recall = self.highlight_recall,
+            highlight_precision = self.highlight_precision,
+            citation_precision = self.citation_precision,
+        )
+    }
+}
+
 impl TestSet {
     pub fn evaluate(&self, inverted_index: &InvertedIndex, top_n: usize) -> Evaluation {
         self.evaluate_report(inverted_index, top_n)
@@ -316,11 +513,15 @@ impl TestSet {
         inverted_index: &InvertedIndex,
         top_n: usize,
     ) -> EvaluationReport {
-        let queries: Vec<QueryEvaluation> = self
+        let evaluated_queries: Vec<EvaluatedQuery> = self
             .queries
             .par_iter()
             .map(|query| evaluate_test_query(&self.ranking_algorithm, inverted_index, query, top_n))
             .collect();
+        let queries = evaluated_queries
+            .iter()
+            .map(|query| query.file_retrieval.clone())
+            .collect::<Vec<_>>();
 
         let aggregate = average_evaluations(
             &queries
@@ -351,12 +552,23 @@ impl TestSet {
                 queries,
             },
             evidence: EvidenceReport {
-                status: EvidenceReportStatus::NotScored,
+                status: EvidenceReportStatus::Scored,
                 queries_with_evidence,
                 total_evidence_spans,
+                groundedness: aggregate_groundedness(
+                    &evaluated_queries
+                        .iter()
+                        .map(|query| query.groundedness.clone())
+                        .collect::<Vec<_>>(),
+                ),
             },
         }
     }
+}
+
+struct EvaluatedQuery {
+    file_retrieval: QueryEvaluation,
+    groundedness: GroundednessEvaluation,
 }
 
 fn evaluate_test_query(
@@ -364,24 +576,28 @@ fn evaluate_test_query(
     inverted_index: &InvertedIndex,
     query: &TestQuery,
     top_n: usize,
-) -> QueryEvaluation {
+) -> EvaluatedQuery {
     let ranked_docs = ranking_algorithm
         .rank(inverted_index, &query.query, top_n)
         .map(|ranking| ranking.0)
         .unwrap_or_default();
 
     let metrics = evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n);
+    let groundedness = evaluate_groundedness_at_k(&ranked_docs, &query.groundedness_results, top_n);
     let retrieved_docs = ranked_docs
         .into_iter()
         .map(|score| score.doc_path)
         .collect::<Vec<_>>();
 
-    QueryEvaluation {
-        query: query.query.original_text().to_string(),
-        query_shape: query.query_shape,
-        metrics,
-        relevant_docs: query.relevant_docs.clone(),
-        retrieved_docs,
+    EvaluatedQuery {
+        file_retrieval: QueryEvaluation {
+            query: query.query.original_text().to_string(),
+            query_shape: query.query_shape,
+            metrics,
+            relevant_docs: query.relevant_docs.clone(),
+            retrieved_docs,
+        },
+        groundedness,
     }
 }
 
@@ -390,10 +606,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        Evaluation, MetricFamily, TestQuery, TestSet, average_evaluations, evaluate_query_at_k,
+        Evaluation, GroundednessResult, MetricFamily, TestQuery, TestSet, average_evaluations,
+        evaluate_groundedness_at_k, evaluate_query_at_k,
     };
     use crate::{
-        evaluation::dataset::QueryShape,
+        evaluation::dataset::{EvidenceSpan, QueryShape},
         query::AnalyzedQuery,
         ranking::{RankingAlgo, Score},
     };
@@ -411,6 +628,26 @@ mod tests {
 
     fn relevant(paths: &[&str]) -> Vec<PathBuf> {
         paths.iter().map(PathBuf::from).collect()
+    }
+
+    fn span(start_line: usize, snippet: &str) -> EvidenceSpan {
+        EvidenceSpan {
+            start_line,
+            end_line: start_line,
+            snippet: snippet.to_string(),
+        }
+    }
+
+    fn grounded_result(
+        path: &str,
+        relevant: bool,
+        evidence: Vec<EvidenceSpan>,
+    ) -> GroundednessResult {
+        GroundednessResult {
+            path: PathBuf::from(path),
+            relevant,
+            evidence,
+        }
     }
 
     #[test]
@@ -578,11 +815,77 @@ mod tests {
     }
 
     #[test]
+    fn groundedness_counts_retrieved_relevant_path_with_matching_evidence() {
+        let target = span(10, "needle");
+        let ranked = scored(&["a.rs"]);
+        let results = vec![grounded_result("a.rs", true, vec![target])];
+
+        let eval = evaluate_groundedness_at_k(&ranked, &results, 1);
+
+        assert_eq!(eval.matching_evidence, 1);
+        assert!((eval.highlight_recall - 1.0).abs() < 1e-10);
+        assert!((eval.highlight_precision - 1.0).abs() < 1e-10);
+        assert!((eval.citation_precision - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn groundedness_does_not_credit_retrieved_path_without_evidence() {
+        let ranked = scored(&["a.rs"]);
+        let results = vec![
+            grounded_result("a.rs", true, Vec::new()),
+            grounded_result("b.rs", true, vec![span(20, "needle")]),
+        ];
+
+        let eval = evaluate_groundedness_at_k(&ranked, &results, 1);
+
+        assert_eq!(eval.expected_evidence, 1);
+        assert_eq!(eval.matching_evidence, 0);
+        assert!((eval.highlight_recall).abs() < 1e-10);
+        assert!((eval.highlight_precision).abs() < 1e-10);
+        assert!((eval.citation_precision).abs() < 1e-10);
+    }
+
+    #[test]
+    fn groundedness_recall_drops_when_expected_evidence_is_not_retrieved() {
+        let ranked = scored(&["a.rs"]);
+        let results = vec![
+            grounded_result("a.rs", true, vec![span(10, "first")]),
+            grounded_result("b.rs", true, vec![span(20, "second")]),
+        ];
+
+        let eval = evaluate_groundedness_at_k(&ranked, &results, 1);
+
+        assert_eq!(eval.expected_evidence, 2);
+        assert_eq!(eval.matching_evidence, 1);
+        assert!((eval.highlight_recall - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
+    fn groundedness_precision_drops_for_non_relevant_cited_evidence() {
+        let ranked = scored(&["a.rs", "noise.rs"]);
+        let results = vec![
+            grounded_result("a.rs", true, vec![span(10, "needle")]),
+            grounded_result("noise.rs", false, vec![span(30, "distractor")]),
+        ];
+
+        let eval = evaluate_groundedness_at_k(&ranked, &results, 2);
+
+        assert_eq!(eval.cited_evidence, 2);
+        assert_eq!(eval.matching_evidence, 1);
+        assert_eq!(eval.grounded_citations, 1);
+        assert_eq!(eval.total_citations, 2);
+        assert!((eval.highlight_precision - 0.5).abs() < 1e-10);
+        assert!((eval.citation_precision - 0.5).abs() < 1e-10);
+    }
+
+    #[test]
     fn evaluate_report_includes_query_metrics_and_evidence_boundary() {
+        let evidence = span(10, "needle");
         let queries = vec![TestQuery {
             query: AnalyzedQuery::from_frequencies("missing query", Default::default()),
             query_shape: QueryShape::Identifier,
             relevant_docs: relevant(&["a.rs"]),
+            groundedness_results: vec![grounded_result("a.rs", true, vec![evidence])],
             evidence_span_count: 2,
         }];
         let test_set = TestSet {
@@ -605,5 +908,6 @@ mod tests {
         );
         assert_eq!(report.evidence.queries_with_evidence, 1);
         assert_eq!(report.evidence.total_evidence_spans, 2);
+        assert_eq!(report.evidence.groundedness.expected_evidence, 1);
     }
 }

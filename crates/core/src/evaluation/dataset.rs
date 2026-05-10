@@ -126,7 +126,7 @@ pub struct RawResultData {
     pub evidence: Vec<EvidenceSpan>,
 }
 
-#[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EvidenceSpan {
     pub start_line: usize,
     pub end_line: usize,

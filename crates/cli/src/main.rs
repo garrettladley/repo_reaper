@@ -20,7 +20,8 @@ use repo_reaper_core::{
     config::Config as ReaperConfig,
     evaluation::{
         Evaluation, EvaluationCorpus, EvaluationData, EvaluationReport, RawEvaluationData, TestSet,
-        dataset::Relevance, metrics::TestQuery,
+        dataset::Relevance,
+        metrics::{GroundednessResult, TestQuery},
     },
     index::{CorpusStats, InvertedIndex},
     query::AnalyzedQuery,
@@ -393,13 +394,22 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
             let mut relevant_docs: Vec<_> = example
                 .results
                 .iter()
-                .filter_map(|result| match result.relevance {
-                    Relevance::Relevant(rank) => Some((result.path.clone(), rank)),
+                .filter_map(|result| match &result.relevance {
+                    Relevance::Relevant(rank) => Some((result.path.clone(), *rank)),
                     Relevance::NonRelevant => None,
                 })
                 .collect();
 
             relevant_docs.sort_by_key(|a| a.1);
+            let groundedness_results = example
+                .results
+                .iter()
+                .map(|result| GroundednessResult {
+                    path: result.path.clone(),
+                    relevant: matches!(&result.relevance, Relevance::Relevant(_)),
+                    evidence: result.evidence.clone(),
+                })
+                .collect();
 
             TestQuery {
                 query: example.query.clone(),
@@ -408,6 +418,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
                     .par_iter()
                     .map(|(path, _)| path.clone())
                     .collect::<Vec<_>>(),
+                groundedness_results,
                 evidence_span_count: example
                     .results
                     .iter()
@@ -472,6 +483,8 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
 
 fn print_pretty_evaluation(evaluation: &repo_reaper_core::evaluation::metrics::EvaluationReport) {
     println!("{}", evaluation.file_retrieval.aggregate);
+    println!("\ngroundedness:");
+    println!("{}", evaluation.evidence.groundedness);
 
     if evaluation.file_retrieval.slices.is_empty() {
         return;
@@ -513,6 +526,7 @@ fn read_evaluation_baseline(path: &Path) -> Result<EvaluationReport> {
             status: repo_reaper_core::evaluation::metrics::EvidenceReportStatus::NotScored,
             queries_with_evidence: 0,
             total_evidence_spans: 0,
+            groundedness: repo_reaper_core::evaluation::metrics::GroundednessEvaluation::default(),
         },
     })
 }
@@ -550,7 +564,7 @@ fn compare_evaluation_reports(
             regressions: Vec::new(),
         },
         evidence: EvidenceComparison {
-            status: "not_scored".to_string(),
+            status: current.evidence.status.to_string(),
             baseline_queries_with_evidence: baseline.evidence.queries_with_evidence,
             current_queries_with_evidence: current.evidence.queries_with_evidence,
             baseline_total_evidence_spans: baseline.evidence.total_evidence_spans,
