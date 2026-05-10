@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use notify::{
     Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{ModifyKind, RemoveKind},
@@ -46,6 +46,15 @@ struct Args {
     /// Evaluate the training set
     #[clap(short, long, default_value = "false")]
     evaluate: bool,
+    /// Evaluation output format
+    #[clap(long, value_enum, default_value = "pretty")]
+    eval_format: EvalOutputFormat,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum EvalOutputFormat {
+    Pretty,
+    Json,
 }
 
 fn main() -> Result<()> {
@@ -275,14 +284,20 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
         })
         .collect();
 
-    println!(
-        "{:?}",
-        TestSet {
-            ranking_algorithm: args.ranking_algorithm.clone(),
-            queries
+    let evaluation = TestSet {
+        ranking_algorithm: args.ranking_algorithm.clone(),
+        queries,
+    }
+    .evaluate(&inverted_index, args.top_n);
+
+    match args.eval_format {
+        EvalOutputFormat::Pretty => println!("{evaluation}"),
+        EvalOutputFormat::Json => {
+            let json = serde_json::to_string_pretty(&evaluation)
+                .context("failed to serialize evaluation report")?;
+            println!("{json}");
         }
-        .evaluate(&inverted_index, args.top_n)
-    );
+    }
 
     Ok(())
 }
