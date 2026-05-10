@@ -979,6 +979,7 @@ dependencies = [
  "criterion",
  "dashmap",
  "rayon",
+ "regex",
  "rust-stemmers",
  "serde",
  "serde_json",
