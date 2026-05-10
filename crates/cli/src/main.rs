@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use notify::{
@@ -99,7 +99,7 @@ fn main() -> Result<()> {
         "Successfully indexed {} files",
         inverted_index
             .lock()
-            .expect("index lock poisoned")
+            .map_err(|_| anyhow!("index lock poisoned"))?
             .num_docs()
     );
 
@@ -124,25 +124,36 @@ fn main() -> Result<()> {
         }
 
         loop {
-            match rx_clone.lock().expect("rx lock poisoned").recv() {
+            let event = match rx_clone.lock() {
+                Ok(rx) => rx.recv(),
+                Err(_) => {
+                    eprintln!("watch error: event receiver lock poisoned");
+                    return;
+                }
+            };
+
+            match event {
                 Ok(event) => match event {
                     Ok(event) => match event.kind {
                         EventKind::Modify(ModifyKind::Metadata(_)) => continue,
                         EventKind::Remove(RemoveKind::File | RemoveKind::Any) => {
-                            event.paths.par_iter().for_each(|path| {
-                                inverted_index_clone_for_thread
-                                    .lock()
-                                    .expect("index lock poisoned")
-                                    .remove_document(path);
+                            let Ok(mut index) = inverted_index_clone_for_thread.lock() else {
+                                eprintln!("watch error: index lock poisoned");
+                                return;
+                            };
+
+                            event.paths.iter().for_each(|path| {
+                                index.remove_document(path);
                             });
                         }
                         _ => {
-                            event.paths.par_iter().for_each(|path| {
-                                let path_clone = path.clone();
-                                inverted_index_clone_for_thread
-                                    .lock()
-                                    .expect("index lock poisoned")
-                                    .update(&path_clone, &transformer.as_ref());
+                            let Ok(mut index) = inverted_index_clone_for_thread.lock() else {
+                                eprintln!("watch error: index lock poisoned");
+                                return;
+                            };
+
+                            event.paths.iter().for_each(|path| {
+                                index.update(path, &transformer.as_ref());
                             });
                         }
                     },
@@ -169,18 +180,19 @@ fn main() -> Result<()> {
 
         let query = Query::new(&query, &config);
 
-        let ranking = algo.rank(
-            &inverted_index.lock().expect("index lock poisoned"),
-            &query,
-            args.top_n,
-        );
+        let ranking = {
+            let index = inverted_index
+                .lock()
+                .map_err(|_| anyhow!("index lock poisoned"))?;
+            algo.rank(&index, &query, args.top_n)
+        };
 
         log_query(&query, &ranking, &algo, args.top_n)?;
 
         match ranking {
             Some(ranking) => {
                 ranking.0.iter().for_each(|rank| {
-                    println!("{:?}", rank);
+                    println!("{rank}");
                 });
             }
             None => println!("No results found :("),
