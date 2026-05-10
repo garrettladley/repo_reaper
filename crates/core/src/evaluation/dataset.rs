@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{config::Config, error::EvalError, query::Query};
+use crate::{config::Config, error::EvalError, query::AnalyzedQuery};
 
 #[derive(serde::Deserialize, Debug)]
 pub struct RawEvaluationData {
@@ -78,7 +78,7 @@ pub struct RawExample {
 }
 
 pub struct Example {
-    pub query: Query,
+    pub query: AnalyzedQuery,
     pub narrative: String,
     pub query_shape: Option<QueryShape>,
     pub results: Vec<ResultData>,
@@ -93,7 +93,7 @@ impl Example {
             .collect();
 
         Ok(Example {
-            query: Query::new(&raw.query, config),
+            query: AnalyzedQuery::new(&raw.query, config),
             narrative: raw.narrative,
             query_shape: raw.query_shape,
             results: results?,

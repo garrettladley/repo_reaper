@@ -5,8 +5,8 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     error::RankingError,
-    index::{DocId, InvertedIndex, TermDocument},
-    query::Query,
+    index::{DocId, InvertedIndex, Term, TermDocument},
+    query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
 
@@ -35,7 +35,9 @@ impl Scorer for BM25 {
     fn score(
         &self,
         inverted_index: &InvertedIndex,
-        _: &Query,
+        _: &AnalyzedQuery,
+        _: &Term,
+        query_term: QueryTerm,
         documents: &HashMap<DocId, TermDocument>,
         scores: &DashMap<DocId, f64>,
     ) {
@@ -47,7 +49,7 @@ impl Scorer for BM25 {
         documents.par_iter().for_each(|(doc_id, term_doc)| {
             let tf = term_doc.term_freq as f64;
             let doc_length = term_doc.length as f64;
-            let score = idf * (tf * (self.hyper_params.k1 + 1.0))
+            let score = query_term.weight * idf * (tf * (self.hyper_params.k1 + 1.0))
                 / (tf
                     + self.hyper_params.k1
                         * (1.0 - self.hyper_params.b + self.hyper_params.b * doc_length / avgdl));
@@ -66,7 +68,7 @@ mod tests {
     use super::{BM25, BM25HyperParams};
     use crate::{
         index::{DocId, InvertedIndex, Term},
-        query::Query,
+        query::AnalyzedQuery,
         ranking::scorer::Scorer,
     };
 
@@ -91,11 +93,19 @@ mod tests {
             ("high.rs", &[("rust", 10), ("other", 1)]),
             ("low.rs", &[("rust", 1), ("other", 1)]),
         ]);
-        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let term = Term("rust".to_string());
+        let query = AnalyzedQuery::from_frequencies("rust", HashMap::from([(term.clone(), 1)]));
         let scores = DashMap::new();
 
-        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
-        bm25().score(&index, &query, docs, &scores);
+        let docs = index.get_postings(&term).unwrap();
+        bm25().score(
+            &index,
+            &query,
+            &term,
+            *query.terms().next().unwrap().1,
+            docs,
+            &scores,
+        );
 
         let high = score_for_path(&index, &scores, "high.rs");
         let low = score_for_path(&index, &scores, "low.rs");
@@ -109,15 +119,18 @@ mod tests {
             ("b.rs", &[("common", 1)]),
             ("c.rs", &[("common", 1)]),
         ]);
-        let query = Query(HashMap::from([
-            (Term("rare".to_string()), 1),
-            (Term("common".to_string()), 1),
-        ]));
+        let query = AnalyzedQuery::from_frequencies(
+            "rare common",
+            HashMap::from([
+                (Term("rare".to_string()), 1),
+                (Term("common".to_string()), 1),
+            ]),
+        );
 
         let scores = DashMap::new();
-        for term in query.0.keys() {
+        for (term, query_term) in query.terms() {
             if let Some(docs) = index.get_postings(term) {
-                bm25().score(&index, &query, docs, &scores);
+                bm25().score(&index, &query, term, *query_term, docs, &scores);
             }
         }
 
@@ -132,13 +145,58 @@ mod tests {
     #[test]
     fn scores_are_positive() {
         let index = index_from(&[("a.rs", &[("rust", 3)])]);
-        let query = Query(HashMap::from([(Term("rust".to_string()), 1)]));
+        let term = Term("rust".to_string());
+        let query = AnalyzedQuery::from_frequencies("rust", HashMap::from([(term.clone(), 1)]));
         let scores = DashMap::new();
 
-        let docs = index.get_postings(&Term("rust".to_string())).unwrap();
-        bm25().score(&index, &query, docs, &scores);
+        let docs = index.get_postings(&term).unwrap();
+        bm25().score(
+            &index,
+            &query,
+            &term,
+            *query.terms().next().unwrap().1,
+            docs,
+            &scores,
+        );
 
         let score = score_for_path(&index, &scores, "a.rs");
         assert!(score > 0.0, "BM25 score should be positive, got {score}");
+    }
+
+    #[test]
+    fn query_weight_scales_score() {
+        let index = index_from(&[("a.rs", &[("rust", 3)])]);
+        let term = Term("rust".to_string());
+        let low_query = AnalyzedQuery::from_weights("rust", HashMap::from([(term.clone(), 1.0)]));
+        let high_query =
+            AnalyzedQuery::from_weights("rust^3", HashMap::from([(term.clone(), 3.0)]));
+        let docs = index.get_postings(&term).unwrap();
+
+        let low_scores = DashMap::new();
+        bm25().score(
+            &index,
+            &low_query,
+            &term,
+            *low_query.terms().next().unwrap().1,
+            docs,
+            &low_scores,
+        );
+
+        let high_scores = DashMap::new();
+        bm25().score(
+            &index,
+            &high_query,
+            &term,
+            *high_query.terms().next().unwrap().1,
+            docs,
+            &high_scores,
+        );
+
+        let low = score_for_path(&index, &low_scores, "a.rs");
+        let high = score_for_path(&index, &high_scores, "a.rs");
+        assert!(
+            high > low,
+            "higher query weight should increase score: {high} vs {low}"
+        );
     }
 }
