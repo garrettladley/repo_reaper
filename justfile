@@ -2,24 +2,53 @@
 default:
     @just --list
 
-# fmt → lint → test → build
+# run the same quality gates as the pull request CI workflow
 [group("ci")]
-check: fmt lint test build
+ci: fmt-check lint test deny
+
+# alias for the full local quality gate
+[group("ci")]
+check: ci
 
 # format with nightly (required for rustfmt.toml options)
 [group("dev")]
 fmt:
-    cargo +nightly fmt
+    cargo +nightly fmt --all
+
+# check formatting the same way CI does
+[group("ci")]
+fmt-check:
+    cargo +nightly fmt --all -- --check
 
 # run clippy with all workspace lints as errors
-[group("dev")]
+[group("ci")]
 lint:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# run tests, accepts extra args: just test --lib
-[group("dev")]
+# run all workspace tests, accepts extra args: just test -- --nocapture
+[group("ci")]
 test *ARGS:
-    cargo test {{ARGS}}
+    cargo test --workspace {{ARGS}}
+
+# run core crate tests
+[group("dev")]
+test-core *ARGS:
+    cargo test -p repo-reaper-core {{ARGS}}
+
+# run cli crate tests
+[group("dev")]
+test-cli *ARGS:
+    cargo test -p repo-reaper-cli {{ARGS}}
+
+# run cargo-deny checks the same way CI does
+[group("ci")]
+deny:
+    cargo deny check
+
+# run the scheduled advisory-only security audit
+[group("ci")]
+audit:
+    cargo deny check advisories
 
 # run the checked-in repo-native evaluation smoke set
 [group("dev")]
@@ -29,7 +58,7 @@ eval-smoke:
 # compile the workspace
 [group("dev")]
 build:
-    cargo build
+    cargo build --workspace
 
 # run the core Criterion benchmark harness
 [group("dev")]
