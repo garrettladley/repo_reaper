@@ -1,5 +1,6 @@
 mod corpus;
 mod engine;
+mod regex_query;
 mod trigram_index;
 mod types;
 
@@ -7,6 +8,7 @@ use std::ops::{Range, RangeInclusive};
 
 pub use corpus::{CorpusDocument, FileSystemCorpus, RegexCorpus};
 pub use engine::RegexSearchEngine;
+pub use regex_query::RegexCandidatePlan;
 pub use trigram_index::{TrigramIndex, trigrams};
 pub use types::{LiteralSearchResult, RegexSearchError, RegexSearchMatch, Trigram};
 

@@ -5,8 +5,8 @@ use std::{
 };
 
 use super::{
-    FileSystemCorpus, LiteralSearchResult, RegexCorpus, RegexSearchMatch, Trigram,
-    line_range_for_match,
+    FileSystemCorpus, LiteralSearchResult, RegexCandidatePlan, RegexCorpus, RegexSearchMatch,
+    Trigram, line_range_for_match,
 };
 use crate::index::{
     DocId,
@@ -81,23 +81,22 @@ where
 
     pub fn candidates_for_literal(&self, literal: &str) -> BTreeSet<DocId> {
         let query_trigrams = trigrams(literal);
-        if query_trigrams.is_empty() {
-            return self.doc_ids_by_path.iter().copied().collect();
+        self.candidates_for_trigrams(&query_trigrams)
+    }
+
+    pub fn candidates_for_regex(&self, pattern: &str) -> BTreeSet<DocId> {
+        self.candidates_for_regex_plan(&RegexCandidatePlan::for_pattern(pattern))
+    }
+
+    pub fn candidates_for_regex_plan(&self, plan: &RegexCandidatePlan) -> BTreeSet<DocId> {
+        match plan {
+            RegexCandidatePlan::All => self.doc_ids_by_path.iter().copied().collect(),
+            RegexCandidatePlan::And(trigrams) => self.candidates_for_trigrams(trigrams),
+            RegexCandidatePlan::Or(branches) => branches
+                .iter()
+                .flat_map(|branch| self.candidates_for_regex_plan(branch))
+                .collect(),
         }
-
-        let mut candidates = match self.postings(&query_trigrams[0]) {
-            Some(postings) => postings.clone(),
-            None => return BTreeSet::new(),
-        };
-
-        for trigram in &query_trigrams[1..] {
-            let Some(postings) = self.postings(trigram) else {
-                return BTreeSet::new();
-            };
-            candidates = candidates.intersection(postings).copied().collect();
-        }
-
-        candidates
     }
 
     pub fn search_literal(&self, literal: &str) -> LiteralSearchResult {
@@ -129,6 +128,26 @@ where
             candidate_count,
             matches,
         }
+    }
+
+    fn candidates_for_trigrams(&self, trigrams: &[Trigram]) -> BTreeSet<DocId> {
+        if trigrams.is_empty() {
+            return self.doc_ids_by_path.iter().copied().collect();
+        }
+
+        let mut candidates = match self.postings(&trigrams[0]) {
+            Some(postings) => postings.clone(),
+            None => return BTreeSet::new(),
+        };
+
+        for trigram in &trigrams[1..] {
+            let Some(postings) = self.postings(trigram) else {
+                return BTreeSet::new();
+            };
+            candidates = candidates.intersection(postings).copied().collect();
+        }
+
+        candidates
     }
 }
 
