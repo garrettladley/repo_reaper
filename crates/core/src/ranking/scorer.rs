@@ -4,7 +4,7 @@ use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{InvertedIndex, TermDocument},
+    index::{DocId, InvertedIndex, TermDocument},
     query::Query,
     ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration},
 };
@@ -52,8 +52,8 @@ pub trait Scorer: Send + Sync {
         &self,
         inverted_index: &InvertedIndex,
         query: &Query,
-        documents: &HashMap<PathBuf, TermDocument>,
-        scores: &DashMap<PathBuf, f64>,
+        documents: &HashMap<DocId, TermDocument>,
+        scores: &DashMap<DocId, f64>,
     );
 }
 
@@ -79,9 +79,11 @@ impl RankingAlgorithm for RankingAlgo {
             scores
                 .iter()
                 .par_bridge()
-                .map(|score| Score {
-                    doc_path: score.key().to_owned(),
-                    score: *score.value(),
+                .filter_map(|score| {
+                    inverted_index.document(*score.key()).map(|metadata| Score {
+                        doc_path: metadata.path.clone(),
+                        score: *score.value(),
+                    })
                 })
                 .collect(),
         )

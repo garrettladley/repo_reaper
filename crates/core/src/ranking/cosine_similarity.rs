@@ -1,10 +1,10 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{InvertedIndex, TermDocument},
+    index::{DocId, InvertedIndex, TermDocument},
     query::Query,
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -16,8 +16,8 @@ impl Scorer for CosineSimilarity {
         &self,
         inverted_index: &InvertedIndex,
         query: &Query,
-        documents: &HashMap<PathBuf, TermDocument>,
-        scores: &DashMap<PathBuf, f64>,
+        documents: &HashMap<DocId, TermDocument>,
+        scores: &DashMap<DocId, f64>,
     ) {
         let num_docs = inverted_index.num_docs();
 
@@ -36,7 +36,7 @@ impl Scorer for CosineSimilarity {
         documents
             .iter()
             .par_bridge()
-            .for_each(|(doc_path, term_doc)| {
+            .for_each(|(doc_id, term_doc)| {
                 let tf = term_doc.term_freq as f64;
                 let dot_product = tf * term_idf * term_idf;
 
@@ -44,7 +44,7 @@ impl Scorer for CosineSimilarity {
                     .postings_iter()
                     .par_bridge()
                     .filter_map(|(_, doc_map)| {
-                        doc_map.get(doc_path).map(|td| {
+                        doc_map.get(doc_id).map(|td| {
                             let tf = td.term_freq as f64;
                             let doc_term_idf = idf(num_docs, doc_map.len());
                             let w = tf * doc_term_idf;
@@ -56,7 +56,7 @@ impl Scorer for CosineSimilarity {
 
                 let cosine_similarity = dot_product / (query_magnitude * doc_magnitude);
 
-                *scores.entry(doc_path.to_owned()).or_insert(0.0) += cosine_similarity;
+                *scores.entry(*doc_id).or_insert(0.0) += cosine_similarity;
             });
     }
 }
@@ -69,26 +69,13 @@ mod tests {
 
     use super::CosineSimilarity;
     use crate::{
-        index::{InvertedIndex, Term, TermDocument},
+        index::{InvertedIndex, Term},
         query::Query,
         ranking::{scorer::Scorer, utils::idf},
     };
 
     fn index_from(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
-        let mut postings: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
-        for &(path, terms) in docs {
-            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
-            for &(term, freq) in terms {
-                postings.entry(Term(term.to_string())).or_default().insert(
-                    PathBuf::from(path),
-                    TermDocument {
-                        length: total_len,
-                        term_freq: freq as usize,
-                    },
-                );
-            }
-        }
-        InvertedIndex::from_postings(postings)
+        InvertedIndex::from_documents(docs)
     }
 
     fn score_query(index: &InvertedIndex, query: &Query) -> HashMap<PathBuf, f64> {
@@ -98,7 +85,14 @@ mod tests {
                 CosineSimilarity.score(index, query, documents, &scores);
             }
         }
-        scores.into_iter().collect()
+        scores
+            .into_iter()
+            .filter_map(|(doc_id, score)| {
+                index
+                    .document(doc_id)
+                    .map(|metadata| (metadata.path.clone(), score))
+            })
+            .collect()
     }
 
     #[test]

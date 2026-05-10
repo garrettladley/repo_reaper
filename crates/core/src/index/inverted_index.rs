@@ -20,7 +20,7 @@ pub struct TermDocument {
 
 #[derive(Debug)]
 pub struct InvertedIndex<R = DocumentRegistry> {
-    postings: HashMap<Term, HashMap<PathBuf, TermDocument>>,
+    postings: HashMap<Term, HashMap<DocId, TermDocument>>,
     documents: R,
 }
 
@@ -34,19 +34,23 @@ struct ProcessedDocument {
 
 impl InvertedIndex<DocumentRegistry> {
     #[cfg(test)]
-    pub(crate) fn from_postings(postings: HashMap<Term, HashMap<PathBuf, TermDocument>>) -> Self {
-        let mut unique_docs: HashMap<PathBuf, usize> = HashMap::new();
-        for doc_map in postings.values() {
-            for (path, td) in doc_map {
-                unique_docs.entry(path.clone()).or_insert(td.length);
-            }
-        }
-
+    pub(crate) fn from_documents(docs: &[(&str, &[(&str, u32)])]) -> Self {
         let mut documents = DocumentRegistry::new();
-        let mut unique_docs: Vec<(PathBuf, usize)> = unique_docs.into_iter().collect();
-        unique_docs.sort_by(|(left, _), (right, _)| left.cmp(right));
-        for (path, length) in unique_docs {
-            documents.insert_or_update(path, length, 0);
+        let mut postings: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
+
+        for &(path, terms) in docs {
+            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
+            let doc_id = documents.insert_or_update(PathBuf::from(path), total_len, 0);
+
+            for &(term, freq) in terms {
+                postings.entry(Term(term.to_string())).or_default().insert(
+                    doc_id,
+                    TermDocument {
+                        length: total_len,
+                        term_freq: freq as usize,
+                    },
+                );
+            }
         }
 
         InvertedIndex {
@@ -105,7 +109,7 @@ impl<R> InvertedIndex<R>
 where
     R: DocumentCatalog,
 {
-    fn read_document(entry_path: &PathBuf) -> Result<String, std::io::Error> {
+    fn read_document(entry_path: &Path) -> Result<String, std::io::Error> {
         fs::read_to_string(entry_path)
     }
 
@@ -114,12 +118,14 @@ where
         entry_path: &Path,
         content: &str,
         transform_fn: &F,
-    ) -> HashMap<Term, HashMap<PathBuf, TermDocument>>
+    ) -> HashMap<Term, HashMap<DocId, TermDocument>>
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
         let document = Self::analyze_document(entry_path, content, transform_fn);
-        Self::postings_for_document(&document)
+        let mut registry = DocumentRegistry::new();
+        let doc_id = registry.insert_or_update(document.path.clone(), document.token_length, 0);
+        Self::postings_for_document(doc_id, &document)
     }
 
     fn analyze_document<F>(entry_path: &Path, content: &str, transform_fn: &F) -> ProcessedDocument
@@ -138,13 +144,14 @@ where
     }
 
     fn postings_for_document(
+        doc_id: DocId,
         document: &ProcessedDocument,
-    ) -> HashMap<Term, HashMap<PathBuf, TermDocument>> {
-        let mut local_map: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
+    ) -> HashMap<Term, HashMap<DocId, TermDocument>> {
+        let mut local_map: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
 
         for (term, freq) in &document.term_frequencies {
             local_map.entry(term.clone()).or_default().insert(
-                document.path.clone(),
+                doc_id,
                 TermDocument {
                     length: document.token_length,
                     term_freq: *freq as usize,
@@ -157,24 +164,25 @@ where
 
     fn insert_processed_document(
         registry: &mut impl DocumentCatalog,
-        postings: &mut HashMap<Term, HashMap<PathBuf, TermDocument>>,
+        postings: &mut HashMap<Term, HashMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
-        registry.insert_or_update(
+        let doc_id = registry.insert_or_update(
             document.path.clone(),
             document.token_length,
             document.file_size_bytes,
         );
 
-        for (term, doc_map) in Self::postings_for_document(&document) {
+        for (term, doc_map) in Self::postings_for_document(doc_id, &document) {
             postings.entry(term).or_default().extend(doc_map);
         }
     }
-    pub fn get_postings(&self, term: &Term) -> Option<&HashMap<PathBuf, TermDocument>> {
+
+    pub fn get_postings(&self, term: &Term) -> Option<&HashMap<DocId, TermDocument>> {
         self.postings.get(term)
     }
 
-    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &HashMap<PathBuf, TermDocument>)> {
+    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &HashMap<DocId, TermDocument>)> {
         self.postings.iter()
     }
 
@@ -200,22 +208,34 @@ where
             .map_or(0, |documents| documents.len())
     }
 
-    pub fn update<F>(&mut self, path: &PathBuf, transform_fn: &F)
+    pub fn update<F>(&mut self, path: &Path, transform_fn: &F)
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
-        self.remove_document(path);
+        if let Some(doc_id) = self.documents.doc_id(path) {
+            self.remove_postings_for_doc(doc_id);
+        }
 
-        if let Ok(content) = Self::read_document(path) {
-            let document = Self::analyze_document(path, &content, transform_fn);
-            Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
+        match Self::read_document(path) {
+            Ok(content) => {
+                let document = Self::analyze_document(path, &content, transform_fn);
+                Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
+            }
+            Err(_) => {
+                self.documents.remove(path);
+            }
         }
     }
 
     pub fn remove_document(&mut self, path: &Path) {
-        self.documents.remove(path);
+        if let Some(metadata) = self.documents.remove(path) {
+            self.remove_postings_for_doc(metadata.id);
+        }
+    }
+
+    fn remove_postings_for_doc(&mut self, doc_id: DocId) {
         self.postings.retain(|_, documents| {
-            documents.remove(path);
+            documents.remove(&doc_id);
             !documents.is_empty()
         });
     }
@@ -229,7 +249,7 @@ mod tests {
     };
 
     use super::InvertedIndex;
-    use crate::index::{document_registry::DocumentRegistry, term::Term};
+    use crate::index::{DocId, document_registry::DocumentRegistry, term::Term};
 
     type TestIndex = InvertedIndex<DocumentRegistry>;
 
@@ -241,14 +261,14 @@ mod tests {
     }
 
     fn get_term_doc<'a>(
-        result: &'a HashMap<Term, HashMap<std::path::PathBuf, super::TermDocument>>,
+        result: &'a HashMap<Term, HashMap<DocId, super::TermDocument>>,
         term: &str,
-        path: &str,
+        doc_id: DocId,
     ) -> &'a super::TermDocument {
         result
             .get(&Term(term.to_string()))
             .unwrap()
-            .get(Path::new(path))
+            .get(&doc_id)
             .unwrap()
     }
 
@@ -258,9 +278,15 @@ mod tests {
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("rust", 3), ("system", 1)]) };
 
         let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let doc_id = *result
+            .get(&Term("rust".to_string()))
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap();
 
-        assert_eq!(get_term_doc(&result, "rust", "test.rs").term_freq, 3);
-        assert_eq!(get_term_doc(&result, "system", "test.rs").term_freq, 1);
+        assert_eq!(get_term_doc(&result, "rust", doc_id).term_freq, 3);
+        assert_eq!(get_term_doc(&result, "system", doc_id).term_freq, 1);
     }
 
     #[test]
@@ -269,8 +295,14 @@ mod tests {
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("rust", 3), ("system", 1)]) };
 
         let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let doc_id = *result
+            .get(&Term("rust".to_string()))
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap();
 
-        assert_eq!(get_term_doc(&result, "rust", "test.rs").length, 4);
+        assert_eq!(get_term_doc(&result, "rust", doc_id).length, 4);
     }
 
     #[test]
@@ -279,10 +311,16 @@ mod tests {
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("foo", 3), ("bar", 1), ("baz", 1)]) };
 
         let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let doc_id = *result
+            .get(&Term("foo".to_string()))
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap();
 
         let lengths: Vec<usize> = result
             .values()
-            .filter_map(|docs| docs.get(Path::new("test.rs")))
+            .filter_map(|docs| docs.get(&doc_id))
             .map(|td| td.length)
             .collect();
 
@@ -290,20 +328,7 @@ mod tests {
     }
 
     fn build_index(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
-        let mut postings: HashMap<Term, HashMap<PathBuf, super::TermDocument>> = HashMap::new();
-        for &(path, terms) in docs {
-            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
-            for &(term, freq) in terms {
-                postings.entry(Term(term.to_string())).or_default().insert(
-                    PathBuf::from(path),
-                    super::TermDocument {
-                        length: total_len,
-                        term_freq: freq as usize,
-                    },
-                );
-            }
-        }
-        InvertedIndex::from_postings(postings)
+        InvertedIndex::from_documents(docs)
     }
 
     #[test]
@@ -386,8 +411,16 @@ mod tests {
         assert_eq!(index.num_docs(), 2);
 
         let hello_docs = index.get_postings(&Term("hello".to_string())).unwrap();
-        assert!(hello_docs.contains_key(&PathBuf::from("src/main.rs")));
-        assert!(hello_docs.contains_key(&PathBuf::from("src/lib.rs")));
+        assert!(
+            index
+                .doc_id(Path::new("src/main.rs"))
+                .is_some_and(|id| hello_docs.contains_key(&id))
+        );
+        assert!(
+            index
+                .doc_id(Path::new("src/lib.rs"))
+                .is_some_and(|id| hello_docs.contains_key(&id))
+        );
     }
 
     #[test]
@@ -398,7 +431,10 @@ mod tests {
         let index = InvertedIndex::new(dir.path(), identity_transform, Some(dir.path()));
 
         let docs = index.get_postings(&Term("token".to_string())).unwrap();
-        let paths: Vec<&PathBuf> = docs.keys().collect();
+        let paths: Vec<&PathBuf> = docs
+            .keys()
+            .filter_map(|&doc_id| index.document(doc_id).map(|metadata| &metadata.path))
+            .collect();
 
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], &PathBuf::from("a.txt"));
@@ -412,7 +448,8 @@ mod tests {
         let index = InvertedIndex::new(dir.path(), identity_transform, None::<&std::path::Path>);
 
         let docs = index.get_postings(&Term("token".to_string())).unwrap();
-        let path = docs.keys().next().unwrap();
+        let doc_id = docs.keys().next().unwrap();
+        let path = &index.document(*doc_id).unwrap().path;
 
         assert!(path.is_absolute());
     }
@@ -423,17 +460,20 @@ mod tests {
         write_temp_file(dir.path(), "a.txt", "old shared");
         let path = dir.path().join("a.txt");
         let mut index = InvertedIndex::new(dir.path(), identity_transform, None::<&Path>);
+        let original_doc_id = index.doc_id(&path).unwrap();
 
         write_temp_file(dir.path(), "a.txt", "new shared shared");
         index.update(&path, &identity_transform);
+        let updated_doc_id = index.doc_id(&path).unwrap();
 
         assert!(index.get_postings(&Term("old".to_string())).is_none());
 
         let new_docs = index.get_postings(&Term("new".to_string())).unwrap();
-        assert!(new_docs.contains_key(&path));
+        assert_eq!(updated_doc_id, original_doc_id);
+        assert!(new_docs.contains_key(&updated_doc_id));
 
         let shared_docs = index.get_postings(&Term("shared".to_string())).unwrap();
-        let shared = shared_docs.get(&path).unwrap();
+        let shared = shared_docs.get(&updated_doc_id).unwrap();
         assert_eq!(shared.length, 3);
         assert_eq!(shared.term_freq, 2);
         assert_eq!(index.num_docs(), 1);
@@ -467,8 +507,12 @@ mod tests {
         assert!(index.get_postings(&Term("only_a".to_string())).is_none());
 
         let shared_docs = index.get_postings(&Term("shared".to_string())).unwrap();
-        assert!(!shared_docs.contains_key(Path::new("a.rs")));
-        assert!(shared_docs.contains_key(Path::new("b.rs")));
+        assert!(index.doc_id(Path::new("a.rs")).is_none());
+        assert!(
+            index
+                .doc_id(Path::new("b.rs"))
+                .is_some_and(|id| shared_docs.contains_key(&id))
+        );
         assert_eq!(index.num_docs(), 1);
         assert_eq!(index.avg_doc_length(), 3.0);
     }
