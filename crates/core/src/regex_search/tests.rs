@@ -3,7 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::{CorpusDocument, RegexCorpus, RegexSearchEngine, Trigram, TrigramIndex, trigrams};
+use regex::Regex;
+
+use super::{
+    CorpusDocument, RegexCandidatePlan, RegexCorpus, RegexSearchEngine, Trigram, TrigramIndex,
+    trigrams,
+};
 
 #[derive(Debug, Clone, Default)]
 struct TestCorpus {
@@ -299,10 +304,107 @@ fn selective_literal_search_uses_fewer_candidates_than_corpus() {
     assert_eq!(result.matches[0].path, matching);
 }
 
+#[test]
+fn regex_literal_pattern_decomposes_to_required_trigrams() {
+    let trigrams = plan_trigrams(&RegexCandidatePlan::for_pattern("abcdef"));
+
+    assert_eq!(trigrams, ["abc", "bcd", "cde", "def"]);
+}
+
+#[test]
+fn regex_concatenated_literals_preserve_required_trigrams() {
+    let trigrams = plan_trigrams(&RegexCandidatePlan::for_pattern(r"abc\.def"));
+
+    assert_eq!(trigrams, [".de", "abc", "bc.", "c.d", "def"]);
+}
+
+#[test]
+fn regex_alternation_produces_or_candidate_plan() {
+    let plan = RegexCandidatePlan::for_pattern("abcdef|uvwxyz");
+
+    let RegexCandidatePlan::Or(branches) = plan else {
+        panic!("expected alternation to produce an OR plan");
+    };
+
+    assert_eq!(branches.len(), 2);
+    assert_eq!(plan_trigrams(&branches[0]), ["abc", "bcd", "cde", "def"]);
+    assert_eq!(plan_trigrams(&branches[1]), ["uvw", "vwx", "wxy", "xyz"]);
+}
+
+#[test]
+fn regex_wildcards_drop_only_unsafe_local_fragment() {
+    let trigrams = plan_trigrams(&RegexCandidatePlan::for_pattern("abcdef.*uvwxyz"));
+
+    assert_eq!(
+        trigrams,
+        ["abc", "bcd", "cde", "def", "uvw", "vwx", "wxy", "xyz"]
+    );
+}
+
+#[test]
+fn regex_case_insensitive_pattern_falls_back_to_all_candidates() {
+    let plan = RegexCandidatePlan::for_pattern("(?i)abcdef");
+
+    assert_eq!(plan, RegexCandidatePlan::All);
+}
+
+#[test]
+fn regex_character_classes_are_conservative() {
+    let singleton = plan_trigrams(&RegexCandidatePlan::for_pattern("ab[c]def"));
+    let broad = plan_trigrams(&RegexCandidatePlan::for_pattern("abc[xyz]def"));
+
+    assert_eq!(singleton, ["abc", "bcd", "cde", "def"]);
+    assert_eq!(broad, ["abc", "def"]);
+}
+
+#[test]
+fn regex_candidate_generation_is_superset_of_verified_matches() {
+    let documents = [
+        ("match_abc.rs", "xxabcdefyy"),
+        ("match_uv.rs", "prefix uvwxyzz suffix"),
+        ("false_positive.rs", "abc bcd cde def"),
+        ("missing.rs", "nothing relevant"),
+    ];
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&documents));
+    let pattern = r"abcdef|uvwxyz";
+    let regex = Regex::new(pattern).unwrap();
+    let candidates = index.candidates_for_regex(pattern);
+
+    for (path, content) in documents {
+        let path = Path::new(path);
+        let doc_id = index.doc_id(path).unwrap();
+        if regex.is_match(content) {
+            assert!(candidates.contains(&doc_id));
+        }
+    }
+}
+
+#[test]
+fn unsupported_regex_constructs_fall_back_to_broader_candidates() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "foo123bar"),
+        ("other.rs", "unrelated"),
+    ]));
+    let candidates = index.candidates_for_regex(r"foo\d+bar");
+
+    assert!(candidates.contains(&index.doc_id(Path::new("match.rs")).unwrap()));
+}
+
 fn write_file(root: &Path, path: &str, content: &str) -> std::io::Result<()> {
     let path = root.join(path);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, content)
+}
+
+fn plan_trigrams(plan: &RegexCandidatePlan) -> Vec<String> {
+    let RegexCandidatePlan::And(trigrams) = plan else {
+        panic!("expected an AND plan");
+    };
+
+    trigrams
+        .iter()
+        .map(|trigram| trigram.as_str().to_string())
+        .collect()
 }
