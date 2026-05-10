@@ -965,6 +965,7 @@ dependencies = [
  "rayon",
  "repo-reaper-core",
  "rust-stemmers",
+ "serde",
  "serde_json",
  "stop-words",
  "tempfile",
