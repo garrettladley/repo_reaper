@@ -346,6 +346,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
 
             TestQuery {
                 query: example.query.clone(),
+                query_shape: example.query_shape,
                 relevant_docs: relevant_docs
                     .par_iter()
                     .map(|(path, _)| path.clone())
@@ -358,10 +359,10 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
         ranking_algorithm: args.ranking_algorithm.clone(),
         queries,
     }
-    .evaluate(&inverted_index, args.top_n);
+    .evaluate_report(&inverted_index, args.top_n);
 
     match args.eval_format {
-        EvalOutputFormat::Pretty => println!("{evaluation}"),
+        EvalOutputFormat::Pretty => print_pretty_evaluation(&evaluation),
         EvalOutputFormat::Json => {
             let json = serde_json::to_string_pretty(&evaluation)
                 .context("failed to serialize evaluation report")?;
@@ -370,6 +371,28 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_pretty_evaluation(evaluation: &repo_reaper_core::evaluation::metrics::EvaluationReport) {
+    println!("{}", evaluation.aggregate);
+
+    if evaluation.slices.is_empty() {
+        return;
+    }
+
+    println!("\nquery-shape slices:");
+    for slice in &evaluation.slices {
+        println!(
+            "  {shape} ({family}, n={count}): MAP@{k}: {map:.4}, MRR@{k}: {mrr:.4}, NDCG@{k}: {ndcg:.4}",
+            shape = slice.query_shape,
+            family = slice.metric_family,
+            count = slice.query_count,
+            k = slice.metrics.k,
+            map = slice.metrics.mean_average_precision,
+            mrr = slice.metrics.mean_reciprocal_rank,
+            ndcg = slice.metrics.normalized_discounted_cumulative_gain,
+        );
+    }
 }
 
 fn prepare_git_eval_workdir(path: &Path, fresh: bool) -> Result<()> {

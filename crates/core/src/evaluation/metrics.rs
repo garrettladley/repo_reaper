@@ -1,8 +1,13 @@
-use std::{collections::HashSet, fmt, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    path::PathBuf,
+};
 
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
+    evaluation::dataset::QueryShape,
     index::InvertedIndex,
     query::AnalyzedQuery,
     ranking::{RankingAlgo, Score},
@@ -15,6 +20,7 @@ pub struct TestSet {
 
 pub struct TestQuery {
     pub query: AnalyzedQuery,
+    pub query_shape: QueryShape,
     pub relevant_docs: Vec<PathBuf>,
 }
 
@@ -45,6 +51,68 @@ impl Default for Evaluation {
     fn default() -> Self {
         Self::zero(0)
     }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MetricFamily {
+    ManyRelevantDocuments,
+    TopDocument,
+}
+
+impl fmt::Display for MetricFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MetricFamily::ManyRelevantDocuments => write!(f, "many_relevant_documents"),
+            MetricFamily::TopDocument => write!(f, "top_document"),
+        }
+    }
+}
+
+impl QueryShape {
+    pub fn metric_family(self) -> MetricFamily {
+        match self {
+            QueryShape::Conceptual => MetricFamily::ManyRelevantDocuments,
+            QueryShape::Configuration
+            | QueryShape::ErrorMessage
+            | QueryShape::Identifier
+            | QueryShape::Navigational
+            | QueryShape::Path
+            | QueryShape::Regex
+            | QueryShape::TestFinding => MetricFamily::TopDocument,
+        }
+    }
+}
+
+impl fmt::Display for QueryShape {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QueryShape::Conceptual => write!(f, "conceptual"),
+            QueryShape::Configuration => write!(f, "configuration"),
+            QueryShape::ErrorMessage => write!(f, "error_message"),
+            QueryShape::Identifier => write!(f, "identifier"),
+            QueryShape::Navigational => write!(f, "navigational"),
+            QueryShape::Path => write!(f, "path"),
+            QueryShape::Regex => write!(f, "regex"),
+            QueryShape::TestFinding => write!(f, "test_finding"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EvaluationSlice {
+    pub query_shape: QueryShape,
+    pub metric_family: MetricFamily,
+    pub query_count: usize,
+    #[serde(flatten)]
+    pub metrics: Evaluation,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct EvaluationReport {
+    #[serde(flatten)]
+    pub aggregate: Evaluation,
+    pub slices: Vec<EvaluationSlice>,
 }
 
 pub fn evaluate_query_at_k(
@@ -171,6 +239,24 @@ pub fn average_evaluations(evaluations: &[Evaluation]) -> Evaluation {
     }
 }
 
+fn evaluation_slices(evaluations: &[(QueryShape, Evaluation)]) -> Vec<EvaluationSlice> {
+    let mut by_shape: BTreeMap<QueryShape, Vec<Evaluation>> = BTreeMap::new();
+
+    evaluations.iter().for_each(|(shape, evaluation)| {
+        by_shape.entry(*shape).or_default().push(evaluation.clone());
+    });
+
+    by_shape
+        .into_iter()
+        .map(|(query_shape, evaluations)| EvaluationSlice {
+            query_shape,
+            metric_family: query_shape.metric_family(),
+            query_count: evaluations.len(),
+            metrics: average_evaluations(&evaluations),
+        })
+        .collect()
+}
+
 impl fmt::Display for Evaluation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -188,8 +274,38 @@ impl fmt::Display for Evaluation {
 
 impl TestSet {
     pub fn evaluate(&self, inverted_index: &InvertedIndex, top_n: usize) -> Evaluation {
-        let evaluations: Vec<Evaluation> = self
-            .queries
+        let evaluations = self.query_evaluations(inverted_index, top_n);
+        let evaluations: Vec<_> = evaluations
+            .into_iter()
+            .map(|(_, evaluation)| evaluation)
+            .collect();
+
+        average_evaluations(&evaluations)
+    }
+
+    pub fn evaluate_report(
+        &self,
+        inverted_index: &InvertedIndex,
+        top_n: usize,
+    ) -> EvaluationReport {
+        let evaluations = self.query_evaluations(inverted_index, top_n);
+        let aggregate_evaluations: Vec<_> = evaluations
+            .iter()
+            .map(|(_, evaluation)| evaluation.clone())
+            .collect();
+
+        EvaluationReport {
+            aggregate: average_evaluations(&aggregate_evaluations),
+            slices: evaluation_slices(&evaluations),
+        }
+    }
+
+    fn query_evaluations(
+        &self,
+        inverted_index: &InvertedIndex,
+        top_n: usize,
+    ) -> Vec<(QueryShape, Evaluation)> {
+        self.queries
             .par_iter()
             .map(|query| {
                 let ranked_docs =
@@ -198,14 +314,15 @@ impl TestSet {
                         .rank(inverted_index, &query.query, top_n)
                     {
                         Some(ranking) => ranking.0,
-                        None => return Evaluation::zero(top_n),
+                        None => return (query.query_shape, Evaluation::zero(top_n)),
                     };
 
-                evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n)
+                (
+                    query.query_shape,
+                    evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n),
+                )
             })
-            .collect();
-
-        average_evaluations(&evaluations)
+            .collect()
     }
 }
 
@@ -213,8 +330,8 @@ impl TestSet {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Evaluation, average_evaluations, evaluate_query_at_k};
-    use crate::ranking::Score;
+    use super::{Evaluation, MetricFamily, average_evaluations, evaluate_query_at_k};
+    use crate::{evaluation::dataset::QueryShape, ranking::Score};
 
     fn scored(paths: &[&str]) -> Vec<Score> {
         paths
@@ -323,6 +440,57 @@ mod tests {
         assert!((avg.mean_average_precision).abs() < 1e-10);
         assert!((avg.mean_reciprocal_rank).abs() < 1e-10);
         assert!((avg.normalized_discounted_cumulative_gain).abs() < 1e-10);
+    }
+
+    #[test]
+    fn evaluation_slices_average_metrics_by_query_shape() {
+        let evaluations = vec![
+            (
+                QueryShape::Conceptual,
+                Evaluation {
+                    k: 10,
+                    precision_at_k: 0.2,
+                    recall_at_k: 0.4,
+                    mean_average_precision: 0.6,
+                    mean_reciprocal_rank: 0.8,
+                    normalized_discounted_cumulative_gain: 1.0,
+                },
+            ),
+            (
+                QueryShape::Conceptual,
+                Evaluation {
+                    k: 10,
+                    precision_at_k: 0.4,
+                    recall_at_k: 0.6,
+                    mean_average_precision: 0.2,
+                    mean_reciprocal_rank: 0.4,
+                    normalized_discounted_cumulative_gain: 0.6,
+                },
+            ),
+            (
+                QueryShape::Identifier,
+                Evaluation {
+                    k: 10,
+                    precision_at_k: 1.0,
+                    recall_at_k: 1.0,
+                    mean_average_precision: 1.0,
+                    mean_reciprocal_rank: 1.0,
+                    normalized_discounted_cumulative_gain: 1.0,
+                },
+            ),
+        ];
+
+        let slices = super::evaluation_slices(&evaluations);
+
+        assert_eq!(slices.len(), 2);
+        assert_eq!(slices[0].query_shape, QueryShape::Conceptual);
+        assert_eq!(slices[0].metric_family, MetricFamily::ManyRelevantDocuments);
+        assert_eq!(slices[0].query_count, 2);
+        assert!((slices[0].metrics.mean_average_precision - 0.4).abs() < 1e-10);
+        assert_eq!(slices[1].query_shape, QueryShape::Identifier);
+        assert_eq!(slices[1].metric_family, MetricFamily::TopDocument);
+        assert_eq!(slices[1].query_count, 1);
+        assert!((slices[1].metrics.mean_reciprocal_rank - 1.0).abs() < 1e-10);
     }
 
     #[test]
