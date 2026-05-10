@@ -52,15 +52,29 @@ struct ProcessedDocument {
     file_size_bytes: u64,
 }
 
+#[cfg(test)]
+type TestDocumentSpec<'a> = (&'a str, &'a [(&'a str, u32)], u64);
+
 impl InvertedIndex<DocumentRegistry> {
     #[cfg(test)]
     pub(crate) fn from_documents(docs: &[(&str, &[(&str, u32)])]) -> Self {
+        Self::from_documents_with_sizes(
+            &docs
+                .iter()
+                .map(|(path, terms)| (*path, *terms, 0))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_documents_with_sizes(docs: &[TestDocumentSpec<'_>]) -> Self {
         let mut documents = DocumentRegistry::new();
         let mut postings: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
 
-        for &(path, terms) in docs {
+        for &(path, terms, file_size_bytes) in docs {
             let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
-            let doc_id = documents.insert_or_update(PathBuf::from(path), total_len, 0);
+            let doc_id =
+                documents.insert_or_update(PathBuf::from(path), total_len, file_size_bytes);
 
             for &(term, freq) in terms {
                 postings.entry(Term(term.to_string())).or_default().insert(

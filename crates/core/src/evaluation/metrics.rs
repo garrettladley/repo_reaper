@@ -139,6 +139,8 @@ pub struct QueryEvaluation {
     pub metrics: Evaluation,
     pub relevant_docs: Vec<PathBuf>,
     pub retrieved_docs: Vec<PathBuf>,
+    #[serde(default)]
+    pub token_efficiency: TokenEfficiencyEvaluation,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -148,6 +150,8 @@ pub struct EvidenceReport {
     pub total_evidence_spans: usize,
     #[serde(default)]
     pub groundedness: GroundednessEvaluation,
+    #[serde(default)]
+    pub token_efficiency: TokenEfficiencyEvaluation,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -179,6 +183,36 @@ pub struct GroundednessEvaluation {
     pub citation_precision: f64,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, Default)]
+pub struct TokenEfficiencyEvaluation {
+    pub k: usize,
+    pub returned_bytes: usize,
+    pub estimated_returned_tokens: usize,
+    pub relevant_evidence_bytes: usize,
+    pub estimated_relevant_evidence_tokens: usize,
+    pub evidence_density: f64,
+}
+
+impl TokenEfficiencyEvaluation {
+    pub fn zero(k: usize) -> Self {
+        TokenEfficiencyEvaluation {
+            k,
+            ..TokenEfficiencyEvaluation::default()
+        }
+    }
+
+    fn from_counts(k: usize, returned_bytes: usize, relevant_evidence_bytes: usize) -> Self {
+        TokenEfficiencyEvaluation {
+            k,
+            returned_bytes,
+            estimated_returned_tokens: estimate_tokens_from_bytes(returned_bytes),
+            relevant_evidence_bytes,
+            estimated_relevant_evidence_tokens: estimate_tokens_from_bytes(relevant_evidence_bytes),
+            evidence_density: ratio(relevant_evidence_bytes, returned_bytes),
+        }
+    }
+}
+
 impl GroundednessEvaluation {
     pub fn zero(k: usize) -> Self {
         GroundednessEvaluation {
@@ -207,6 +241,35 @@ impl GroundednessEvaluation {
             citation_precision: ratio(grounded_citations, total_citations),
         }
     }
+}
+
+pub fn evaluate_token_efficiency_at_k(
+    ranked_docs: &[Score],
+    results: &[GroundednessResult],
+    inverted_index: &InvertedIndex,
+    k: usize,
+) -> TokenEfficiencyEvaluation {
+    if k == 0 {
+        return TokenEfficiencyEvaluation::zero(k);
+    }
+
+    let cutoff_docs = &ranked_docs[..ranked_docs.len().min(k)];
+    let returned_docs = cutoff_docs
+        .iter()
+        .filter_map(|doc| inverted_index.doc_id(&doc.doc_path))
+        .filter_map(|doc_id| inverted_index.document(doc_id))
+        .map(|metadata| (&metadata.path, metadata.file_size_bytes as usize))
+        .collect::<Vec<_>>();
+    let returned_bytes = returned_docs.iter().map(|(_, bytes)| bytes).sum();
+    let retrieved_paths: HashSet<&PathBuf> = returned_docs.iter().map(|(path, _)| *path).collect();
+    let relevant_evidence_bytes = results
+        .iter()
+        .filter(|result| result.relevant && retrieved_paths.contains(&result.path))
+        .flat_map(|result| &result.evidence)
+        .map(|span| span.snippet.len())
+        .sum();
+
+    TokenEfficiencyEvaluation::from_counts(k, returned_bytes, relevant_evidence_bytes)
 }
 
 pub fn evaluate_query_at_k(
@@ -335,6 +398,10 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
     }
 }
 
+fn estimate_tokens_from_bytes(bytes: usize) -> usize {
+    bytes.div_ceil(4)
+}
+
 fn average_precision_at_k(
     ranked_docs: &[Score],
     relevant_docs: &HashSet<&PathBuf>,
@@ -455,6 +522,27 @@ pub fn aggregate_groundedness(evaluations: &[GroundednessEvaluation]) -> Grounde
     )
 }
 
+pub fn aggregate_token_efficiency(
+    evaluations: &[TokenEfficiencyEvaluation],
+) -> TokenEfficiencyEvaluation {
+    if evaluations.is_empty() {
+        return TokenEfficiencyEvaluation::default();
+    }
+
+    let (k, returned_bytes, relevant_evidence_bytes) =
+        evaluations
+            .iter()
+            .fold((0, 0, 0), |(max_k, returned, evidence), evaluation| {
+                (
+                    max_k.max(evaluation.k),
+                    returned + evaluation.returned_bytes,
+                    evidence + evaluation.relevant_evidence_bytes,
+                )
+            });
+
+    TokenEfficiencyEvaluation::from_counts(k, returned_bytes, relevant_evidence_bytes)
+}
+
 fn evaluation_slices(evaluations: &[(QueryShape, Evaluation)]) -> Vec<EvaluationSlice> {
     let mut by_shape: BTreeMap<QueryShape, Vec<Evaluation>> = BTreeMap::new();
 
@@ -497,6 +585,21 @@ impl fmt::Display for GroundednessEvaluation {
             highlight_recall = self.highlight_recall,
             highlight_precision = self.highlight_precision,
             citation_precision = self.citation_precision,
+        )
+    }
+}
+
+impl fmt::Display for TokenEfficiencyEvaluation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "returned bytes@{k}: {returned_bytes}\nestimated returned tokens@{k}: {returned_tokens}\nrelevant evidence bytes@{k}: {evidence_bytes}\nestimated relevant evidence tokens@{k}: {evidence_tokens}\nevidence density@{k}: {evidence_density:.4}",
+            k = self.k,
+            returned_bytes = self.returned_bytes,
+            returned_tokens = self.estimated_returned_tokens,
+            evidence_bytes = self.relevant_evidence_bytes,
+            evidence_tokens = self.estimated_relevant_evidence_tokens,
+            evidence_density = self.evidence_density,
         )
     }
 }
@@ -561,6 +664,12 @@ impl TestSet {
                         .map(|query| query.groundedness.clone())
                         .collect::<Vec<_>>(),
                 ),
+                token_efficiency: aggregate_token_efficiency(
+                    &evaluated_queries
+                        .iter()
+                        .map(|query| query.token_efficiency.clone())
+                        .collect::<Vec<_>>(),
+                ),
             },
         }
     }
@@ -569,6 +678,7 @@ impl TestSet {
 struct EvaluatedQuery {
     file_retrieval: QueryEvaluation,
     groundedness: GroundednessEvaluation,
+    token_efficiency: TokenEfficiencyEvaluation,
 }
 
 fn evaluate_test_query(
@@ -584,6 +694,12 @@ fn evaluate_test_query(
 
     let metrics = evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n);
     let groundedness = evaluate_groundedness_at_k(&ranked_docs, &query.groundedness_results, top_n);
+    let token_efficiency = evaluate_token_efficiency_at_k(
+        &ranked_docs,
+        &query.groundedness_results,
+        inverted_index,
+        top_n,
+    );
     let retrieved_docs = ranked_docs
         .into_iter()
         .map(|score| score.doc_path)
@@ -596,8 +712,10 @@ fn evaluate_test_query(
             metrics,
             relevant_docs: query.relevant_docs.clone(),
             retrieved_docs,
+            token_efficiency: token_efficiency.clone(),
         },
         groundedness,
+        token_efficiency,
     }
 }
 
@@ -607,7 +725,7 @@ mod tests {
 
     use super::{
         Evaluation, GroundednessResult, MetricFamily, TestQuery, TestSet, average_evaluations,
-        evaluate_groundedness_at_k, evaluate_query_at_k,
+        evaluate_groundedness_at_k, evaluate_query_at_k, evaluate_token_efficiency_at_k,
     };
     use crate::{
         evaluation::dataset::{EvidenceSpan, QueryShape},
@@ -879,6 +997,129 @@ mod tests {
     }
 
     #[test]
+    fn token_efficiency_counts_returned_docs_only() {
+        let ranked = scored(&["a.rs"]);
+        let results = vec![
+            grounded_result("a.rs", true, vec![span(10, "needle")]),
+            grounded_result("b.rs", true, vec![span(20, "not returned")]),
+        ];
+        let index = crate::index::InvertedIndex::from_documents_with_sizes(&[
+            ("a.rs", &[("needle", 1)], 100),
+            ("b.rs", &[("needle", 1)], 400),
+        ]);
+
+        let eval = evaluate_token_efficiency_at_k(&ranked, &results, &index, 10);
+
+        assert_eq!(eval.returned_bytes, 100);
+        assert_eq!(eval.estimated_returned_tokens, 25);
+    }
+
+    #[test]
+    fn token_efficiency_counts_retrieved_relevant_evidence_bytes() {
+        let ranked = scored(&["a.rs", "b.rs"]);
+        let results = vec![
+            grounded_result("a.rs", true, vec![span(10, "needle")]),
+            grounded_result("b.rs", false, vec![span(20, "distractor")]),
+        ];
+        let index = crate::index::InvertedIndex::from_documents_with_sizes(&[
+            ("a.rs", &[("needle", 1)], 100),
+            ("b.rs", &[("noise", 1)], 200),
+        ]);
+
+        let eval = evaluate_token_efficiency_at_k(&ranked, &results, &index, 2);
+
+        assert_eq!(eval.relevant_evidence_bytes, "needle".len());
+        assert_eq!(eval.estimated_relevant_evidence_tokens, 2);
+    }
+
+    #[test]
+    fn token_efficiency_density_drops_when_extra_non_evidence_docs_are_returned() {
+        let results = vec![grounded_result("a.rs", true, vec![span(10, "needle")])];
+        let index = crate::index::InvertedIndex::from_documents_with_sizes(&[
+            ("a.rs", &[("needle", 1)], 100),
+            ("noise.rs", &[("noise", 1)], 300),
+        ]);
+
+        let focused = evaluate_token_efficiency_at_k(&scored(&["a.rs"]), &results, &index, 1);
+        let noisy =
+            evaluate_token_efficiency_at_k(&scored(&["a.rs", "noise.rs"]), &results, &index, 2);
+
+        assert!(noisy.evidence_density < focused.evidence_density);
+    }
+
+    #[test]
+    fn token_efficiency_zero_returned_bytes_stays_finite() {
+        let ranked = scored(&["missing.rs"]);
+        let results = vec![grounded_result(
+            "missing.rs",
+            true,
+            vec![span(10, "needle")],
+        )];
+        let index = crate::index::InvertedIndex::from_documents_with_sizes(&[]);
+
+        let eval = evaluate_token_efficiency_at_k(&ranked, &results, &index, 1);
+
+        assert_eq!(eval.returned_bytes, 0);
+        assert_eq!(eval.relevant_evidence_bytes, 0);
+        assert_eq!(eval.evidence_density, 0.0);
+        assert!(eval.evidence_density.is_finite());
+    }
+
+    #[test]
+    fn evaluation_report_deserializes_without_token_efficiency_fields() {
+        let content = r#"{
+            "file_retrieval": {
+                "k": 10,
+                "precision_at_k": 0.0,
+                "recall_at_k": 0.0,
+                "mean_average_precision": 0.0,
+                "mean_reciprocal_rank": 0.0,
+                "normalized_discounted_cumulative_gain": 0.0,
+                "queries": [{
+                    "query": "missing query",
+                    "query_shape": "identifier",
+                    "metrics": {
+                        "k": 10,
+                        "precision_at_k": 0.0,
+                        "recall_at_k": 0.0,
+                        "mean_average_precision": 0.0,
+                        "mean_reciprocal_rank": 0.0,
+                        "normalized_discounted_cumulative_gain": 0.0
+                    },
+                    "relevant_docs": ["a.rs"],
+                    "retrieved_docs": []
+                }]
+            },
+            "evidence": {
+                "status": "scored",
+                "queries_with_evidence": 1,
+                "total_evidence_spans": 1,
+                "groundedness": {
+                    "k": 10,
+                    "expected_evidence": 0,
+                    "cited_evidence": 0,
+                    "matching_evidence": 0,
+                    "grounded_citations": 0,
+                    "total_citations": 0,
+                    "highlight_recall": 0.0,
+                    "highlight_precision": 0.0,
+                    "citation_precision": 0.0
+                }
+            }
+        }"#;
+
+        let report: super::EvaluationReport = serde_json::from_str(content).unwrap();
+
+        assert_eq!(report.evidence.token_efficiency.returned_bytes, 0);
+        assert_eq!(
+            report.file_retrieval.queries[0]
+                .token_efficiency
+                .returned_bytes,
+            0
+        );
+    }
+
+    #[test]
     fn evaluate_report_includes_query_metrics_and_evidence_boundary() {
         let evidence = span(10, "needle");
         let queries = vec![TestQuery {
@@ -909,5 +1150,6 @@ mod tests {
         assert_eq!(report.evidence.queries_with_evidence, 1);
         assert_eq!(report.evidence.total_evidence_spans, 2);
         assert_eq!(report.evidence.groundedness.expected_evidence, 1);
+        assert_eq!(report.evidence.token_efficiency.k, 10);
     }
 }

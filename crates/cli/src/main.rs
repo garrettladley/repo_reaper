@@ -21,7 +21,7 @@ use repo_reaper_core::{
     evaluation::{
         Evaluation, EvaluationCorpus, EvaluationData, EvaluationReport, RawEvaluationData, TestSet,
         dataset::Relevance,
-        metrics::{GroundednessResult, TestQuery},
+        metrics::{GroundednessResult, TestQuery, TokenEfficiencyEvaluation},
     },
     index::{CorpusStats, InvertedIndex},
     query::AnalyzedQuery,
@@ -126,6 +126,19 @@ struct EvidenceComparison {
     current_queries_with_evidence: usize,
     baseline_total_evidence_spans: usize,
     current_total_evidence_spans: usize,
+    token_efficiency: TokenEfficiencyComparison,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct TokenEfficiencyComparison {
+    baseline_returned_bytes: usize,
+    current_returned_bytes: usize,
+    baseline_estimated_returned_tokens: usize,
+    current_estimated_returned_tokens: usize,
+    baseline_relevant_evidence_bytes: usize,
+    current_relevant_evidence_bytes: usize,
+    baseline_evidence_density: f64,
+    current_evidence_density: f64,
 }
 
 fn main() -> Result<()> {
@@ -485,6 +498,8 @@ fn print_pretty_evaluation(evaluation: &repo_reaper_core::evaluation::metrics::E
     println!("{}", evaluation.file_retrieval.aggregate);
     println!("\ngroundedness:");
     println!("{}", evaluation.evidence.groundedness);
+    println!("\ntoken efficiency:");
+    println!("{}", evaluation.evidence.token_efficiency);
 
     if evaluation.file_retrieval.slices.is_empty() {
         return;
@@ -527,6 +542,7 @@ fn read_evaluation_baseline(path: &Path) -> Result<EvaluationReport> {
             queries_with_evidence: 0,
             total_evidence_spans: 0,
             groundedness: repo_reaper_core::evaluation::metrics::GroundednessEvaluation::default(),
+            token_efficiency: TokenEfficiencyEvaluation::default(),
         },
     })
 }
@@ -569,7 +585,27 @@ fn compare_evaluation_reports(
             current_queries_with_evidence: current.evidence.queries_with_evidence,
             baseline_total_evidence_spans: baseline.evidence.total_evidence_spans,
             current_total_evidence_spans: current.evidence.total_evidence_spans,
+            token_efficiency: compare_token_efficiency(
+                &baseline.evidence.token_efficiency,
+                &current.evidence.token_efficiency,
+            ),
         },
+    }
+}
+
+fn compare_token_efficiency(
+    baseline: &TokenEfficiencyEvaluation,
+    current: &TokenEfficiencyEvaluation,
+) -> TokenEfficiencyComparison {
+    TokenEfficiencyComparison {
+        baseline_returned_bytes: baseline.returned_bytes,
+        current_returned_bytes: current.returned_bytes,
+        baseline_estimated_returned_tokens: baseline.estimated_returned_tokens,
+        current_estimated_returned_tokens: current.estimated_returned_tokens,
+        baseline_relevant_evidence_bytes: baseline.relevant_evidence_bytes,
+        current_relevant_evidence_bytes: current.relevant_evidence_bytes,
+        baseline_evidence_density: baseline.evidence_density,
+        current_evidence_density: current.evidence_density,
     }
 }
 
@@ -690,6 +726,27 @@ fn print_evaluation_comparison(comparison: &EvaluationComparison) {
         comparison.evidence.current_queries_with_evidence,
         comparison.evidence.baseline_total_evidence_spans,
         comparison.evidence.current_total_evidence_spans
+    );
+    println!(
+        "token efficiency: returned bytes {} -> {}, estimated tokens {} -> {}, evidence density {:.4} -> {:.4}",
+        comparison.evidence.token_efficiency.baseline_returned_bytes,
+        comparison.evidence.token_efficiency.current_returned_bytes,
+        comparison
+            .evidence
+            .token_efficiency
+            .baseline_estimated_returned_tokens,
+        comparison
+            .evidence
+            .token_efficiency
+            .current_estimated_returned_tokens,
+        comparison
+            .evidence
+            .token_efficiency
+            .baseline_evidence_density,
+        comparison
+            .evidence
+            .token_efficiency
+            .current_evidence_density
     );
 }
 
