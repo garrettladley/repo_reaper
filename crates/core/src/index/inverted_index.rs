@@ -7,9 +7,12 @@ use std::{
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use walkdir::WalkDir;
 
-use crate::index::{
-    document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
-    term::Term,
+use crate::{
+    index::{
+        document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+        term::Term,
+    },
+    ranking::idf,
 };
 
 #[derive(Debug)]
@@ -22,6 +25,7 @@ pub struct TermDocument {
 pub struct InvertedIndex<R = DocumentRegistry> {
     postings: HashMap<Term, HashMap<DocId, TermDocument>>,
     documents: R,
+    document_norms: HashMap<DocId, f64>,
 }
 
 #[derive(Debug)]
@@ -53,9 +57,12 @@ impl InvertedIndex<DocumentRegistry> {
             }
         }
 
+        let document_norms = Self::compute_document_norms(&postings, documents.len());
+
         InvertedIndex {
             postings,
             documents,
+            document_norms,
         }
     }
 
@@ -98,9 +105,12 @@ impl InvertedIndex<DocumentRegistry> {
             Self::insert_processed_document(&mut registry, &mut postings, document);
         }
 
+        let document_norms = Self::compute_document_norms(&postings, registry.len());
+
         Self {
             postings,
             documents: registry,
+            document_norms,
         }
     }
 }
@@ -186,6 +196,10 @@ where
         self.postings.iter()
     }
 
+    pub fn document_norm(&self, doc_id: DocId) -> Option<f64> {
+        self.document_norms.get(&doc_id).copied()
+    }
+
     pub fn num_docs(&self) -> usize {
         self.documents.len()
     }
@@ -220,9 +234,11 @@ where
             Ok(content) => {
                 let document = Self::analyze_document(path, &content, transform_fn);
                 Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
+                self.rebuild_document_norms();
             }
             Err(_) => {
                 self.documents.remove(path);
+                self.rebuild_document_norms();
             }
         }
     }
@@ -230,6 +246,7 @@ where
     pub fn remove_document(&mut self, path: &Path) {
         if let Some(metadata) = self.documents.remove(path) {
             self.remove_postings_for_doc(metadata.id);
+            self.rebuild_document_norms();
         }
     }
 
@@ -238,6 +255,32 @@ where
             documents.remove(&doc_id);
             !documents.is_empty()
         });
+    }
+
+    fn rebuild_document_norms(&mut self) {
+        self.document_norms = Self::compute_document_norms(&self.postings, self.documents.len());
+    }
+
+    fn compute_document_norms(
+        postings: &HashMap<Term, HashMap<DocId, TermDocument>>,
+        num_docs: usize,
+    ) -> HashMap<DocId, f64> {
+        let mut squared_weights = HashMap::new();
+
+        for doc_map in postings.values() {
+            let term_idf = idf(num_docs, doc_map.len());
+
+            for (&doc_id, term_doc) in doc_map {
+                let tf = term_doc.term_freq as f64;
+                let weight = tf * term_idf;
+                *squared_weights.entry(doc_id).or_insert(0.0) += weight * weight;
+            }
+        }
+
+        squared_weights
+            .into_iter()
+            .map(|(doc_id, squared_weight)| (doc_id, squared_weight.sqrt()))
+            .collect()
     }
 }
 
@@ -249,7 +292,10 @@ mod tests {
     };
 
     use super::InvertedIndex;
-    use crate::index::{DocId, document_registry::DocumentRegistry, term::Term};
+    use crate::{
+        index::{DocId, document_registry::DocumentRegistry, term::Term},
+        ranking::idf,
+    };
 
     type TestIndex = InvertedIndex<DocumentRegistry>;
 
@@ -377,6 +423,19 @@ mod tests {
     }
 
     #[test]
+    fn document_norm_is_cached_by_document_id() {
+        let index = build_index(&[
+            ("a.rs", &[("rare", 1), ("common", 1)]),
+            ("b.rs", &[("common", 1)]),
+        ]);
+
+        let doc_id = index.doc_id(Path::new("a.rs")).unwrap();
+        let expected = (idf(2, 1).powi(2) + idf(2, 2).powi(2)).sqrt();
+
+        assert!((index.document_norm(doc_id).unwrap() - expected).abs() < 1e-10);
+    }
+
+    #[test]
     fn avg_doc_length_empty_index_is_zero() {
         let index = build_index(&[]);
 
@@ -481,16 +540,37 @@ mod tests {
     }
 
     #[test]
+    fn update_recomputes_cached_document_norm_for_stable_doc_id() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "a.txt", "rust rust code");
+        let path = dir.path().join("a.txt");
+        let mut index = InvertedIndex::new(dir.path(), identity_transform, None::<&Path>);
+        let original_doc_id = index.doc_id(&path).unwrap();
+        let original_norm = index.document_norm(original_doc_id).unwrap();
+
+        write_temp_file(dir.path(), "a.txt", "rust");
+        index.update(&path, &identity_transform);
+        let updated_doc_id = index.doc_id(&path).unwrap();
+        let expected = idf(1, 1);
+
+        assert_eq!(updated_doc_id, original_doc_id);
+        assert!((index.document_norm(updated_doc_id).unwrap() - expected).abs() < 1e-10);
+        assert!(original_norm > expected);
+    }
+
+    #[test]
     fn update_missing_file_removes_existing_document() {
         let dir = tempfile::tempdir().unwrap();
         write_temp_file(dir.path(), "a.txt", "token");
         let path = dir.path().join("a.txt");
         let mut index = InvertedIndex::new(dir.path(), identity_transform, None::<&Path>);
+        let doc_id = index.doc_id(&path).unwrap();
 
         std::fs::remove_file(&path).unwrap();
         index.update(&path, &identity_transform);
 
         assert!(index.get_postings(&Term("token".to_string())).is_none());
+        assert!(index.document_norm(doc_id).is_none());
         assert_eq!(index.num_docs(), 0);
         assert_eq!(index.avg_doc_length(), 0.0);
     }
@@ -501,6 +581,7 @@ mod tests {
             ("a.rs", &[("shared", 1), ("only_a", 1)]),
             ("b.rs", &[("shared", 2), ("only_b", 1)]),
         ]);
+        let removed_doc_id = index.doc_id(Path::new("a.rs")).unwrap();
 
         index.remove_document(Path::new("a.rs"));
 
@@ -508,6 +589,7 @@ mod tests {
 
         let shared_docs = index.get_postings(&Term("shared".to_string())).unwrap();
         assert!(index.doc_id(Path::new("a.rs")).is_none());
+        assert!(index.document_norm(removed_doc_id).is_none());
         assert!(
             index
                 .doc_id(Path::new("b.rs"))

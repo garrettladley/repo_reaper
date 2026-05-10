@@ -40,19 +40,9 @@ impl Scorer for CosineSimilarity {
                 let tf = term_doc.term_freq as f64;
                 let dot_product = tf * term_idf * term_idf;
 
-                let doc_magnitude = inverted_index
-                    .postings_iter()
-                    .par_bridge()
-                    .filter_map(|(_, doc_map)| {
-                        doc_map.get(doc_id).map(|td| {
-                            let tf = td.term_freq as f64;
-                            let doc_term_idf = idf(num_docs, doc_map.len());
-                            let w = tf * doc_term_idf;
-                            w * w
-                        })
-                    })
-                    .sum::<f64>()
-                    .sqrt();
+                let Some(doc_magnitude) = inverted_index.document_norm(*doc_id) else {
+                    return;
+                };
 
                 let cosine_similarity = dot_product / (query_magnitude * doc_magnitude);
 
