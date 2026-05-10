@@ -7,7 +7,10 @@ use std::{
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use walkdir::WalkDir;
 
-use crate::index::term::Term;
+use crate::index::{
+    document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+    term::Term,
+};
 
 #[derive(Debug)]
 pub struct TermDocument {
@@ -16,25 +19,39 @@ pub struct TermDocument {
 }
 
 #[derive(Debug)]
-pub struct InvertedIndex {
+pub struct InvertedIndex<R = DocumentRegistry> {
     postings: HashMap<Term, HashMap<PathBuf, TermDocument>>,
-    doc_count: usize,
-    total_doc_length: u64,
+    documents: R,
 }
 
-impl InvertedIndex {
+#[derive(Debug)]
+struct ProcessedDocument {
+    path: PathBuf,
+    term_frequencies: HashMap<Term, u32>,
+    token_length: usize,
+    file_size_bytes: u64,
+}
+
+impl InvertedIndex<DocumentRegistry> {
+    #[cfg(test)]
     pub(crate) fn from_postings(postings: HashMap<Term, HashMap<PathBuf, TermDocument>>) -> Self {
-        let mut unique_docs: HashMap<&PathBuf, usize> = HashMap::new();
+        let mut unique_docs: HashMap<PathBuf, usize> = HashMap::new();
         for doc_map in postings.values() {
             for (path, td) in doc_map {
-                unique_docs.entry(path).or_insert(td.length);
+                unique_docs.entry(path.clone()).or_insert(td.length);
             }
         }
 
+        let mut documents = DocumentRegistry::new();
+        let mut unique_docs: Vec<(PathBuf, usize)> = unique_docs.into_iter().collect();
+        unique_docs.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (path, length) in unique_docs {
+            documents.insert_or_update(path, length, 0);
+        }
+
         InvertedIndex {
-            doc_count: unique_docs.len(),
-            total_doc_length: unique_docs.values().map(|&l| l as u64).sum(),
             postings,
+            documents,
         }
     }
 
@@ -46,12 +63,12 @@ impl InvertedIndex {
         let root_path: PathBuf = root.as_ref().to_owned();
         let drop_prefix = drop_prefix.map(|p| p.as_ref().to_owned());
 
-        let postings = WalkDir::new(root_path)
+        let mut documents: Vec<ProcessedDocument> = WalkDir::new(root_path)
             .into_iter()
             .par_bridge()
             .filter_map(Result::ok)
             .filter(|e| e.file_type().is_file())
-            .map(|entry| {
+            .filter_map(|entry| {
                 let full_path = entry.path().to_path_buf();
 
                 let index_path = if let Some(ref prefix) = drop_prefix {
@@ -63,26 +80,36 @@ impl InvertedIndex {
                     full_path.clone()
                 };
 
-                if let Ok(content) = Self::read_document(&full_path) {
-                    Self::process_document(&index_path, &content, &transform_fn)
-                } else {
-                    HashMap::new()
-                }
+                Self::read_document(&full_path)
+                    .ok()
+                    .map(|content| Self::analyze_document(&index_path, &content, &transform_fn))
             })
-            .reduce(HashMap::new, |mut accumulator, local_map| {
-                for (term, doc_map) in local_map {
-                    accumulator.entry(term).or_default().extend(doc_map);
-                }
-                accumulator
-            });
+            .collect();
 
-        Self::from_postings(postings)
+        documents.sort_by(|left, right| left.path.cmp(&right.path));
+
+        let mut registry = DocumentRegistry::new();
+        let mut postings = HashMap::new();
+        for document in documents {
+            Self::insert_processed_document(&mut registry, &mut postings, document);
+        }
+
+        Self {
+            postings,
+            documents: registry,
+        }
     }
+}
 
+impl<R> InvertedIndex<R>
+where
+    R: DocumentCatalog,
+{
     fn read_document(entry_path: &PathBuf) -> Result<String, std::io::Error> {
         fs::read_to_string(entry_path)
     }
 
+    #[cfg(test)]
     fn process_document<F>(
         entry_path: &Path,
         content: &str,
@@ -91,26 +118,58 @@ impl InvertedIndex {
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
-        let term_frequencies = transform_fn(content);
-        let document_length: usize = term_frequencies.values().map(|&c| c as usize).sum();
+        let document = Self::analyze_document(entry_path, content, transform_fn);
+        Self::postings_for_document(&document)
+    }
 
+    fn analyze_document<F>(entry_path: &Path, content: &str, transform_fn: &F) -> ProcessedDocument
+    where
+        F: Fn(&str) -> HashMap<Term, u32> + Sync,
+    {
+        let term_frequencies = transform_fn(content);
+        let token_length: usize = term_frequencies.values().map(|&c| c as usize).sum();
+
+        ProcessedDocument {
+            path: entry_path.to_path_buf(),
+            term_frequencies,
+            token_length,
+            file_size_bytes: content.len() as u64,
+        }
+    }
+
+    fn postings_for_document(
+        document: &ProcessedDocument,
+    ) -> HashMap<Term, HashMap<PathBuf, TermDocument>> {
         let mut local_map: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
 
-        for (term, freq) in term_frequencies {
-            local_map.entry(term).or_default().insert(
-                entry_path.to_path_buf(),
+        for (term, freq) in &document.term_frequencies {
+            local_map.entry(term.clone()).or_default().insert(
+                document.path.clone(),
                 TermDocument {
-                    length: document_length,
-                    term_freq: freq as usize,
+                    length: document.token_length,
+                    term_freq: *freq as usize,
                 },
             );
         }
 
         local_map
     }
-}
 
-impl InvertedIndex {
+    fn insert_processed_document(
+        registry: &mut impl DocumentCatalog,
+        postings: &mut HashMap<Term, HashMap<PathBuf, TermDocument>>,
+        document: ProcessedDocument,
+    ) {
+        registry.insert_or_update(
+            document.path.clone(),
+            document.token_length,
+            document.file_size_bytes,
+        );
+
+        for (term, doc_map) in Self::postings_for_document(&document) {
+            postings.entry(term).or_default().extend(doc_map);
+        }
+    }
     pub fn get_postings(&self, term: &Term) -> Option<&HashMap<PathBuf, TermDocument>> {
         self.postings.get(term)
     }
@@ -120,15 +179,19 @@ impl InvertedIndex {
     }
 
     pub fn num_docs(&self) -> usize {
-        self.doc_count
+        self.documents.len()
     }
 
     pub fn avg_doc_length(&self) -> f64 {
-        if self.doc_count == 0 {
-            return 0.0;
-        }
+        self.documents.avg_doc_length()
+    }
 
-        self.total_doc_length as f64 / self.doc_count as f64
+    pub fn doc_id(&self, path: &Path) -> Option<DocId> {
+        self.documents.doc_id(path)
+    }
+
+    pub fn document(&self, id: DocId) -> Option<&DocumentMetadata> {
+        self.documents.get(id)
     }
 
     pub fn doc_freq(&self, term: &Term) -> usize {
@@ -144,32 +207,17 @@ impl InvertedIndex {
         self.remove_document(path);
 
         if let Ok(content) = Self::read_document(path) {
-            Self::process_document(path, &content, transform_fn)
-                .into_iter()
-                .for_each(|(term, doc_map)| {
-                    self.postings.entry(term).or_default().extend(doc_map);
-                });
-            self.recalculate_stats();
+            let document = Self::analyze_document(path, &content, transform_fn);
+            Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
         }
     }
 
     pub fn remove_document(&mut self, path: &Path) {
+        self.documents.remove(path);
         self.postings.retain(|_, documents| {
             documents.remove(path);
             !documents.is_empty()
         });
-        self.recalculate_stats();
-    }
-
-    fn recalculate_stats(&mut self) {
-        let mut unique_docs: HashMap<&PathBuf, usize> = HashMap::new();
-        for doc_map in self.postings.values() {
-            for (path, td) in doc_map {
-                unique_docs.entry(path).or_insert(td.length);
-            }
-        }
-        self.doc_count = unique_docs.len();
-        self.total_doc_length = unique_docs.values().map(|&l| l as u64).sum();
     }
 }
 
@@ -181,7 +229,9 @@ mod tests {
     };
 
     use super::InvertedIndex;
-    use crate::index::term::Term;
+    use crate::index::{document_registry::DocumentRegistry, term::Term};
+
+    type TestIndex = InvertedIndex<DocumentRegistry>;
 
     fn term_freqs(pairs: &[(&str, u32)]) -> HashMap<Term, u32> {
         pairs
@@ -207,7 +257,7 @@ mod tests {
         let transform_fn =
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("rust", 3), ("system", 1)]) };
 
-        let result = InvertedIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
 
         assert_eq!(get_term_doc(&result, "rust", "test.rs").term_freq, 3);
         assert_eq!(get_term_doc(&result, "system", "test.rs").term_freq, 1);
@@ -218,7 +268,7 @@ mod tests {
         let transform_fn =
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("rust", 3), ("system", 1)]) };
 
-        let result = InvertedIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
 
         assert_eq!(get_term_doc(&result, "rust", "test.rs").length, 4);
     }
@@ -228,7 +278,7 @@ mod tests {
         let transform_fn =
             |_: &str| -> HashMap<Term, u32> { term_freqs(&[("foo", 3), ("bar", 1), ("baz", 1)]) };
 
-        let result = InvertedIndex::process_document(Path::new("test.rs"), "", &transform_fn);
+        let result = TestIndex::process_document(Path::new("test.rs"), "", &transform_fn);
 
         let lengths: Vec<usize> = result
             .values()
@@ -288,6 +338,17 @@ mod tests {
         let index = build_index(&[("a.rs", &[("x", 3), ("y", 7)])]);
 
         assert_eq!(index.avg_doc_length(), 10.0);
+    }
+
+    #[test]
+    fn document_metadata_maps_id_back_to_path() {
+        let index = build_index(&[("a.rs", &[("x", 3), ("y", 7)])]);
+
+        let doc_id = index.doc_id(Path::new("a.rs")).unwrap();
+        let metadata = index.document(doc_id).unwrap();
+
+        assert_eq!(metadata.path, PathBuf::from("a.rs"));
+        assert_eq!(metadata.token_length, 10);
     }
 
     #[test]
