@@ -8,3 +8,4 @@ pub use bm25::{BM25, BM25HyperParams, get_configuration};
 pub use cosine_similarity::CosineSimilarity;
 pub use scorer::{RankingAlgo, RankingAlgorithm, Score, Scored, Scorer};
 pub use tf_idf::TFIDF;
+pub(crate) use utils::idf;
