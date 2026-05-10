@@ -1,11 +1,11 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use dashmap::DashMap;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     error::RankingError,
-    index::{InvertedIndex, TermDocument},
+    index::{DocId, InvertedIndex, TermDocument},
     query::Query,
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -36,15 +36,15 @@ impl Scorer for BM25 {
         &self,
         inverted_index: &InvertedIndex,
         _: &Query,
-        documents: &HashMap<PathBuf, TermDocument>,
-        scores: &DashMap<PathBuf, f64>,
+        documents: &HashMap<DocId, TermDocument>,
+        scores: &DashMap<DocId, f64>,
     ) {
         let avgdl = inverted_index.avg_doc_length();
         let num_docs = inverted_index.num_docs();
 
         let idf = idf(num_docs, documents.len());
 
-        documents.par_iter().for_each(|(doc_path, term_doc)| {
+        documents.par_iter().for_each(|(doc_id, term_doc)| {
             let tf = term_doc.term_freq as f64;
             let doc_length = term_doc.length as f64;
             let score = idf * (tf * (self.hyper_params.k1 + 1.0))
@@ -52,7 +52,7 @@ impl Scorer for BM25 {
                     + self.hyper_params.k1
                         * (1.0 - self.hyper_params.b + self.hyper_params.b * doc_length / avgdl));
 
-            *scores.entry(doc_path.clone()).or_insert(0.0) += score;
+            *scores.entry(*doc_id).or_insert(0.0) += score;
         });
     }
 }
@@ -65,26 +65,18 @@ mod tests {
 
     use super::{BM25, BM25HyperParams};
     use crate::{
-        index::{InvertedIndex, Term, TermDocument},
+        index::{DocId, InvertedIndex, Term},
         query::Query,
         ranking::scorer::Scorer,
     };
 
     fn index_from(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
-        let mut postings: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
-        for &(path, terms) in docs {
-            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
-            for &(term, freq) in terms {
-                postings.entry(Term(term.to_string())).or_default().insert(
-                    PathBuf::from(path),
-                    TermDocument {
-                        length: total_len,
-                        term_freq: freq as usize,
-                    },
-                );
-            }
-        }
-        InvertedIndex::from_postings(postings)
+        InvertedIndex::from_documents(docs)
+    }
+
+    fn score_for_path(index: &InvertedIndex, scores: &DashMap<DocId, f64>, path: &str) -> f64 {
+        let doc_id = index.doc_id(PathBuf::from(path).as_path()).unwrap();
+        *scores.get(&doc_id).unwrap()
     }
 
     fn bm25() -> BM25 {
@@ -105,8 +97,8 @@ mod tests {
         let docs = index.get_postings(&Term("rust".to_string())).unwrap();
         bm25().score(&index, &query, docs, &scores);
 
-        let high = *scores.get(&PathBuf::from("high.rs")).unwrap();
-        let low = *scores.get(&PathBuf::from("low.rs")).unwrap();
+        let high = score_for_path(&index, &scores, "high.rs");
+        let low = score_for_path(&index, &scores, "low.rs");
         assert!(high > low, "higher tf should score higher: {high} vs {low}");
     }
 
@@ -129,8 +121,8 @@ mod tests {
             }
         }
 
-        let a = *scores.get(&PathBuf::from("a.rs")).unwrap();
-        let b = *scores.get(&PathBuf::from("b.rs")).unwrap();
+        let a = score_for_path(&index, &scores, "a.rs");
+        let b = score_for_path(&index, &scores, "b.rs");
         assert!(
             a > b,
             "doc matching rare term should score higher: a={a}, b={b}"
@@ -146,7 +138,7 @@ mod tests {
         let docs = index.get_postings(&Term("rust".to_string())).unwrap();
         bm25().score(&index, &query, docs, &scores);
 
-        let score = *scores.get(&PathBuf::from("a.rs")).unwrap();
+        let score = score_for_path(&index, &scores, "a.rs");
         assert!(score > 0.0, "BM25 score should be positive, got {score}");
     }
 }

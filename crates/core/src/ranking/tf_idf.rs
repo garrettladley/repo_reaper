@@ -1,10 +1,10 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{InvertedIndex, TermDocument},
+    index::{DocId, InvertedIndex, TermDocument},
     query::Query,
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -16,19 +16,19 @@ impl Scorer for TFIDF {
         &self,
         inverted_index: &InvertedIndex,
         _: &Query,
-        documents: &HashMap<PathBuf, TermDocument>,
-        scores: &DashMap<PathBuf, f64>,
+        documents: &HashMap<DocId, TermDocument>,
+        scores: &DashMap<DocId, f64>,
     ) {
         let num_docs = inverted_index.num_docs();
 
         documents
             .iter()
             .par_bridge()
-            .for_each(|(doc_path, term_doc)| {
+            .for_each(|(doc_id, term_doc)| {
                 let tf = term_doc.term_freq as f64 / term_doc.length as f64;
                 let idf = idf(num_docs, documents.len());
 
-                *scores.entry(doc_path.to_owned()).or_insert(0.0) += tf * idf;
+                *scores.entry(*doc_id).or_insert(0.0) += tf * idf;
             });
     }
 }
@@ -41,26 +41,18 @@ mod tests {
 
     use super::TFIDF;
     use crate::{
-        index::{InvertedIndex, Term, TermDocument},
+        index::{DocId, InvertedIndex, Term},
         query::Query,
         ranking::scorer::Scorer,
     };
 
     fn index_from(docs: &[(&str, &[(&str, u32)])]) -> InvertedIndex {
-        let mut postings: HashMap<Term, HashMap<PathBuf, TermDocument>> = HashMap::new();
-        for &(path, terms) in docs {
-            let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
-            for &(term, freq) in terms {
-                postings.entry(Term(term.to_string())).or_default().insert(
-                    PathBuf::from(path),
-                    TermDocument {
-                        length: total_len,
-                        term_freq: freq as usize,
-                    },
-                );
-            }
-        }
-        InvertedIndex::from_postings(postings)
+        InvertedIndex::from_documents(docs)
+    }
+
+    fn score_for_path(index: &InvertedIndex, scores: &DashMap<DocId, f64>, path: &str) -> f64 {
+        let doc_id = index.doc_id(PathBuf::from(path).as_path()).unwrap();
+        *scores.get(&doc_id).unwrap()
     }
 
     #[test]
@@ -76,8 +68,8 @@ mod tests {
         let docs = index.get_postings(&Term("rust".to_string())).unwrap();
         TFIDF.score(&index, &query, docs, &scores);
 
-        let dense = *scores.get(&PathBuf::from("dense.rs")).unwrap();
-        let sparse = *scores.get(&PathBuf::from("sparse.rs")).unwrap();
+        let dense = score_for_path(&index, &scores, "dense.rs");
+        let sparse = score_for_path(&index, &scores, "sparse.rs");
         assert!(
             dense > sparse,
             "higher term density should score higher: dense={dense}, sparse={sparse}"
@@ -93,7 +85,7 @@ mod tests {
         let docs = index.get_postings(&Term("rust".to_string())).unwrap();
         TFIDF.score(&index, &query, docs, &scores);
 
-        let score = *scores.get(&PathBuf::from("a.rs")).unwrap();
+        let score = score_for_path(&index, &scores, "a.rs");
         assert!(score > 0.0, "TF-IDF score should be positive, got {score}");
     }
 }
