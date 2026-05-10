@@ -4,7 +4,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     index::InvertedIndex,
-    query::Query,
+    query::AnalyzedQuery,
     ranking::{RankingAlgo, Score},
 };
 
@@ -14,7 +14,7 @@ pub struct TestSet {
 }
 
 pub struct TestQuery {
-    pub query: Query,
+    pub query: AnalyzedQuery,
     pub relevant_docs: Vec<PathBuf>,
 }
 

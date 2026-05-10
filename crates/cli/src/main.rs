@@ -23,7 +23,7 @@ use repo_reaper_core::{
         metrics::TestQuery,
     },
     index::InvertedIndex,
-    query::Query,
+    query::AnalyzedQuery,
     ranking::RankingAlgo,
     tokenizer::n_gram_transform,
 };
@@ -178,7 +178,7 @@ fn main() -> Result<()> {
             break;
         }
 
-        let query = Query::new(&query, &config);
+        let query = AnalyzedQuery::new(&query, &config);
 
         let ranking = {
             let index = inverted_index
@@ -203,7 +203,7 @@ fn main() -> Result<()> {
 }
 
 fn log_query(
-    query: &Query,
+    query: &AnalyzedQuery,
     ranking: &Option<repo_reaper_core::ranking::Scored>,
     algo: &RankingAlgo,
     top_n: usize,

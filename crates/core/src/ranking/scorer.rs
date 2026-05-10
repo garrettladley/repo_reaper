@@ -1,11 +1,11 @@
 use std::{collections::HashMap, path::PathBuf, str::FromStr};
 
 use dashmap::DashMap;
-use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{DocId, InvertedIndex, TermDocument},
-    query::Query,
+    index::{DocId, InvertedIndex, Term, TermDocument},
+    query::{AnalyzedQuery, QueryTerm},
     ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration},
 };
 
@@ -44,21 +44,23 @@ pub enum RankingAlgo {
 }
 
 pub trait RankingAlgorithm {
-    fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored;
+    fn score(&self, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored;
 }
 
 pub trait Scorer: Send + Sync {
     fn score(
         &self,
         inverted_index: &InvertedIndex,
-        query: &Query,
+        query: &AnalyzedQuery,
+        term: &Term,
+        query_term: QueryTerm,
         documents: &HashMap<DocId, TermDocument>,
         scores: &DashMap<DocId, f64>,
     );
 }
 
 impl RankingAlgorithm for RankingAlgo {
-    fn score(&self, inverted_index: &InvertedIndex, query: &Query) -> Scored {
+    fn score(&self, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored {
         let scorer: Box<dyn Scorer> = match self {
             RankingAlgo::CosineSimilarity => Box::new(CosineSimilarity),
             RankingAlgo::BM25(hyper_params) => Box::new(BM25 {
@@ -69,9 +71,9 @@ impl RankingAlgorithm for RankingAlgo {
 
         let scores = DashMap::new();
 
-        query.0.par_iter().for_each(|(term, _)| {
+        query.terms().par_bridge().for_each(|(term, query_term)| {
             if let Some(documents) = inverted_index.get_postings(term) {
-                scorer.score(inverted_index, query, documents, &scores)
+                scorer.score(inverted_index, query, term, *query_term, documents, &scores)
             }
         });
 
@@ -94,10 +96,10 @@ impl RankingAlgo {
     pub fn rank(
         &self,
         inverted_index: &InvertedIndex,
-        query: &Query,
+        query: &AnalyzedQuery,
         top_n: usize,
     ) -> Option<Scored> {
-        if query.0.is_empty() {
+        if query.is_empty() {
             return None;
         }
 
@@ -129,5 +131,69 @@ impl FromStr for RankingAlgo {
             "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, path::PathBuf};
+
+    use super::{BM25HyperParams, RankingAlgo};
+    use crate::{
+        index::{InvertedIndex, Term},
+        query::AnalyzedQuery,
+    };
+
+    fn index() -> InvertedIndex {
+        InvertedIndex::from_documents(&[
+            ("rust.rs", &[("rust", 5), ("code", 1)]),
+            ("code.rs", &[("rust", 1), ("code", 5)]),
+        ])
+    }
+
+    fn query_with_weights(rust: f64, code: f64) -> AnalyzedQuery {
+        AnalyzedQuery::from_weights(
+            "weighted query",
+            HashMap::from([
+                (Term("rust".to_string()), rust),
+                (Term("code".to_string()), code),
+            ]),
+        )
+    }
+
+    fn bm25() -> RankingAlgo {
+        RankingAlgo::BM25(BM25HyperParams { k1: 1.2, b: 0.75 })
+    }
+
+    #[test]
+    fn bm25_query_weights_change_ranking_order() {
+        let index = index();
+        let rust_weighted = query_with_weights(4.0, 1.0);
+        let code_weighted = query_with_weights(1.0, 4.0);
+
+        let rust_top = bm25().rank(&index, &rust_weighted, 1).unwrap().0;
+        let code_top = bm25().rank(&index, &code_weighted, 1).unwrap().0;
+
+        assert_eq!(rust_top[0].doc_path, PathBuf::from("rust.rs"));
+        assert_eq!(code_top[0].doc_path, PathBuf::from("code.rs"));
+    }
+
+    #[test]
+    fn tfidf_query_weights_change_ranking_order() {
+        let index = index();
+        let rust_weighted = query_with_weights(4.0, 1.0);
+        let code_weighted = query_with_weights(1.0, 4.0);
+
+        let rust_top = RankingAlgo::TFIDF
+            .rank(&index, &rust_weighted, 1)
+            .unwrap()
+            .0;
+        let code_top = RankingAlgo::TFIDF
+            .rank(&index, &code_weighted, 1)
+            .unwrap()
+            .0;
+
+        assert_eq!(rust_top[0].doc_path, PathBuf::from("rust.rs"));
+        assert_eq!(code_top[0].doc_path, PathBuf::from("code.rs"));
     }
 }
