@@ -55,6 +55,11 @@ audit:
 eval-smoke:
     cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10 --fresh
 
+# compare the checked-in repo-native evaluation set against a saved JSON baseline
+[group("dev")]
+eval-compare baseline:
+    baseline="{{baseline}}"; cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10 --fresh --eval-compare "${baseline#baseline=}"
+
 # compile the workspace
 [group("dev")]
 build:

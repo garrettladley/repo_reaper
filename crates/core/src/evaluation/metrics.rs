@@ -22,9 +22,10 @@ pub struct TestQuery {
     pub query: AnalyzedQuery,
     pub query_shape: QueryShape,
     pub relevant_docs: Vec<PathBuf>,
+    pub evidence_span_count: usize,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct Evaluation {
     pub k: usize,
     pub precision_at_k: f64,
@@ -53,7 +54,7 @@ impl Default for Evaluation {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MetricFamily {
     ManyRelevantDocuments,
@@ -99,7 +100,7 @@ impl fmt::Display for QueryShape {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct EvaluationSlice {
     pub query_shape: QueryShape,
     pub metric_family: MetricFamily,
@@ -108,11 +109,42 @@ pub struct EvaluationSlice {
     pub metrics: Evaluation,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct EvaluationReport {
+    pub file_retrieval: FileRetrievalReport,
+    pub evidence: EvidenceReport,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FileRetrievalReport {
     #[serde(flatten)]
     pub aggregate: Evaluation,
+    #[serde(default)]
     pub slices: Vec<EvaluationSlice>,
+    #[serde(default)]
+    pub queries: Vec<QueryEvaluation>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct QueryEvaluation {
+    pub query: String,
+    pub query_shape: QueryShape,
+    pub metrics: Evaluation,
+    pub relevant_docs: Vec<PathBuf>,
+    pub retrieved_docs: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EvidenceReport {
+    pub status: EvidenceReportStatus,
+    pub queries_with_evidence: usize,
+    pub total_evidence_spans: usize,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceReportStatus {
+    NotScored,
 }
 
 pub fn evaluate_query_at_k(
@@ -274,13 +306,9 @@ impl fmt::Display for Evaluation {
 
 impl TestSet {
     pub fn evaluate(&self, inverted_index: &InvertedIndex, top_n: usize) -> Evaluation {
-        let evaluations = self.query_evaluations(inverted_index, top_n);
-        let evaluations: Vec<_> = evaluations
-            .into_iter()
-            .map(|(_, evaluation)| evaluation)
-            .collect();
-
-        average_evaluations(&evaluations)
+        self.evaluate_report(inverted_index, top_n)
+            .file_retrieval
+            .aggregate
     }
 
     pub fn evaluate_report(
@@ -288,41 +316,72 @@ impl TestSet {
         inverted_index: &InvertedIndex,
         top_n: usize,
     ) -> EvaluationReport {
-        let evaluations = self.query_evaluations(inverted_index, top_n);
-        let aggregate_evaluations: Vec<_> = evaluations
-            .iter()
-            .map(|(_, evaluation)| evaluation.clone())
+        let queries: Vec<QueryEvaluation> = self
+            .queries
+            .par_iter()
+            .map(|query| evaluate_test_query(&self.ranking_algorithm, inverted_index, query, top_n))
             .collect();
 
+        let aggregate = average_evaluations(
+            &queries
+                .iter()
+                .map(|query| query.metrics.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        let queries_with_evidence = self
+            .queries
+            .iter()
+            .filter(|query| query.evidence_span_count > 0)
+            .count();
+        let total_evidence_spans = self
+            .queries
+            .iter()
+            .map(|query| query.evidence_span_count)
+            .sum();
+        let slice_inputs = queries
+            .iter()
+            .map(|query| (query.query_shape, query.metrics.clone()))
+            .collect::<Vec<_>>();
+
         EvaluationReport {
-            aggregate: average_evaluations(&aggregate_evaluations),
-            slices: evaluation_slices(&evaluations),
+            file_retrieval: FileRetrievalReport {
+                aggregate,
+                slices: evaluation_slices(&slice_inputs),
+                queries,
+            },
+            evidence: EvidenceReport {
+                status: EvidenceReportStatus::NotScored,
+                queries_with_evidence,
+                total_evidence_spans,
+            },
         }
     }
+}
 
-    fn query_evaluations(
-        &self,
-        inverted_index: &InvertedIndex,
-        top_n: usize,
-    ) -> Vec<(QueryShape, Evaluation)> {
-        self.queries
-            .par_iter()
-            .map(|query| {
-                let ranked_docs =
-                    match self
-                        .ranking_algorithm
-                        .rank(inverted_index, &query.query, top_n)
-                    {
-                        Some(ranking) => ranking.0,
-                        None => return (query.query_shape, Evaluation::zero(top_n)),
-                    };
+fn evaluate_test_query(
+    ranking_algorithm: &RankingAlgo,
+    inverted_index: &InvertedIndex,
+    query: &TestQuery,
+    top_n: usize,
+) -> QueryEvaluation {
+    let ranked_docs = ranking_algorithm
+        .rank(inverted_index, &query.query, top_n)
+        .map(|ranking| ranking.0)
+        .unwrap_or_default();
 
-                (
-                    query.query_shape,
-                    evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n),
-                )
-            })
-            .collect()
+    let metrics = evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n);
+    let retrieved_docs = ranked_docs
+        .into_iter()
+        .map(|score| score.doc_path)
+        .collect::<Vec<_>>();
+
+    QueryEvaluation {
+        query: query.query.original_text().to_string(),
+        query_shape: query.query_shape,
+        metrics,
+        relevant_docs: query.relevant_docs.clone(),
+        retrieved_docs,
     }
 }
 
@@ -330,8 +389,14 @@ impl TestSet {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{Evaluation, MetricFamily, average_evaluations, evaluate_query_at_k};
-    use crate::{evaluation::dataset::QueryShape, ranking::Score};
+    use super::{
+        Evaluation, MetricFamily, TestQuery, TestSet, average_evaluations, evaluate_query_at_k,
+    };
+    use crate::{
+        evaluation::dataset::QueryShape,
+        query::AnalyzedQuery,
+        ranking::{RankingAlgo, Score},
+    };
 
     fn scored(paths: &[&str]) -> Vec<Score> {
         paths
@@ -510,5 +575,35 @@ mod tests {
                 "metric must be in [0, 1], got {val}"
             );
         }
+    }
+
+    #[test]
+    fn evaluate_report_includes_query_metrics_and_evidence_boundary() {
+        let queries = vec![TestQuery {
+            query: AnalyzedQuery::from_frequencies("missing query", Default::default()),
+            query_shape: QueryShape::Identifier,
+            relevant_docs: relevant(&["a.rs"]),
+            evidence_span_count: 2,
+        }];
+        let test_set = TestSet {
+            ranking_algorithm: RankingAlgo::TFIDF,
+            queries,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let index = crate::index::InvertedIndex::new(
+            temp.path(),
+            |_| std::collections::HashMap::new(),
+            None,
+        );
+
+        let report = test_set.evaluate_report(&index, 10);
+
+        assert_eq!(report.file_retrieval.queries[0].query, "missing query");
+        assert_eq!(
+            report.file_retrieval.slices[0].query_shape,
+            QueryShape::Identifier
+        );
+        assert_eq!(report.evidence.queries_with_evidence, 1);
+        assert_eq!(report.evidence.total_evidence_spans, 2);
     }
 }
