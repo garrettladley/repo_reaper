@@ -1,5 +1,6 @@
 mod corpus;
 mod engine;
+mod planner;
 mod regex_query;
 mod trigram_index;
 mod types;
@@ -10,7 +11,10 @@ pub use corpus::{CorpusDocument, FileSystemCorpus, RegexCorpus};
 pub use engine::RegexSearchEngine;
 pub use regex_query::RegexCandidatePlan;
 pub use trigram_index::{TrigramIndex, trigrams};
-pub use types::{LiteralSearchResult, RegexSearchError, RegexSearchMatch, Trigram};
+pub use types::{
+    LiteralSearchResult, RegexCandidateDiagnostics, RegexCandidateSelection, RegexSearchError,
+    RegexSearchMatch, Trigram,
+};
 
 pub(crate) fn line_range_for_match(
     content: &str,

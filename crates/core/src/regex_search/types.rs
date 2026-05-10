@@ -1,7 +1,10 @@
 use std::{
+    collections::BTreeSet,
     ops::{Range, RangeInclusive},
     path::PathBuf,
 };
+
+use crate::index::DocId;
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegexSearchError {
@@ -36,4 +39,19 @@ impl From<&str> for Trigram {
 pub struct LiteralSearchResult {
     pub candidate_count: usize,
     pub matches: Vec<RegexSearchMatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexCandidateSelection {
+    pub candidates: BTreeSet<DocId>,
+    pub diagnostics: RegexCandidateDiagnostics,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegexCandidateDiagnostics {
+    pub full_corpus_count: usize,
+    pub candidate_count: usize,
+    pub selected_trigram_count: usize,
+    pub selected_trigrams: Vec<Trigram>,
+    pub fell_back_to_full_scan: bool,
 }
