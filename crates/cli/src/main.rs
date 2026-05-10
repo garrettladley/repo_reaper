@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
     sync::{Arc, Mutex},
     thread,
@@ -53,6 +53,12 @@ struct Args {
     /// Evaluation data JSON
     #[clap(long, default_value = "./data/train.json")]
     eval_data: PathBuf,
+    /// Directory used for a cloned Git evaluation corpus
+    #[clap(long, default_value = "./data/repo")]
+    eval_workdir: PathBuf,
+    /// Remove and reclone the Git evaluation workdir before evaluating
+    #[clap(long, default_value = "false")]
+    fresh: bool,
     /// Print corpus statistics for the indexed directory and exit
     #[clap(long, default_value = "false")]
     stats: bool,
@@ -292,10 +298,8 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     let index_root = match &evaluation_data.corpus {
         EvaluationCorpus::Tree { root } => root.clone(),
         EvaluationCorpus::Git { repo, commit, root } => {
-            let path = PathBuf::from("./data/repo");
-            if path.exists() {
-                fs::remove_dir_all(&path).context("failed to clean previous evaluation repo")?;
-            }
+            let path = args.eval_workdir.clone();
+            prepare_git_eval_workdir(&path, args.fresh)?;
 
             let clone_output = Command::new("git")
                 .arg("clone")
@@ -368,6 +372,35 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     Ok(())
 }
 
+fn prepare_git_eval_workdir(path: &Path, fresh: bool) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    if !fresh {
+        bail!(
+            "evaluation workdir {} already exists; pass --fresh to remove and reclone it, or choose a different --eval-workdir",
+            path.display()
+        );
+    }
+
+    if !path.is_dir() {
+        bail!(
+            "refusing to remove non-directory evaluation workdir {}",
+            path.display()
+        );
+    }
+
+    fs::remove_dir_all(path).with_context(|| {
+        format!(
+            "failed to clean previous evaluation workdir {}",
+            path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 fn ensure_command_succeeded(command: &str, output: std::process::Output) -> Result<()> {
     if output.status.success() {
         return Ok(());
@@ -378,4 +411,59 @@ fn ensure_command_succeeded(command: &str, output: std::process::Output) -> Resu
         status = output.status,
         stderr = String::from_utf8_lossy(&output.stderr).trim()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prepare_git_eval_workdir;
+
+    #[test]
+    fn prepare_git_eval_workdir_allows_missing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("repo");
+
+        prepare_git_eval_workdir(&path, false).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn prepare_git_eval_workdir_refuses_existing_directory_without_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("repo");
+        std::fs::create_dir(&path).unwrap();
+
+        let error = prepare_git_eval_workdir(&path, false).unwrap_err();
+
+        assert!(error.to_string().contains("already exists; pass --fresh"));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn prepare_git_eval_workdir_removes_existing_directory_with_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("repo");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("README.md"), "old clone").unwrap();
+
+        prepare_git_eval_workdir(&path, true).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn prepare_git_eval_workdir_refuses_non_directory_with_fresh() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("repo");
+        std::fs::write(&path, "not a directory").unwrap();
+
+        let error = prepare_git_eval_workdir(&path, true).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to remove non-directory")
+        );
+        assert!(path.exists());
+    }
 }

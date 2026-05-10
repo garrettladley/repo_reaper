@@ -777,6 +777,7 @@ dependencies = [
  "rust-stemmers",
  "serde_json",
  "stop-words",
+ "tempfile",
 ]
 
 [[package]]
