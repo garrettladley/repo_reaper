@@ -30,3 +30,8 @@ eval-smoke:
 [group("dev")]
 build:
     cargo build
+
+# run the core Criterion benchmark harness
+[group("dev")]
+bench:
+    cargo bench -p repo-reaper-core --bench search_bench
