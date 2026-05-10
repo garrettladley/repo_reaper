@@ -380,6 +380,107 @@ fn regex_candidate_generation_is_superset_of_verified_matches() {
 }
 
 #[test]
+fn regex_planner_selects_rare_trigram_before_common_trigram() {
+    let selected = Trigram::from("xyz");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "abc---xyz"),
+        ("common_a.rs", "abc---aaa"),
+        ("common_b.rs", "abc---bbb"),
+    ]));
+    let plan = RegexCandidatePlan::And(vec![Trigram::from("abc"), selected.clone()]);
+
+    let selection = index.planned_candidates_for_regex_plan(&plan);
+
+    assert_eq!(selection.diagnostics.selected_trigrams, [selected]);
+    assert_eq!(selection.diagnostics.candidate_count, 1);
+    assert!(
+        selection
+            .candidates
+            .contains(&index.doc_id(Path::new("match.rs")).unwrap())
+    );
+}
+
+#[test]
+fn regex_planner_missing_trigram_yields_no_candidates() {
+    let index =
+        TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "abcdef"), ("b.rs", "uvwxyz")]));
+    let plan = RegexCandidatePlan::And(vec![Trigram::from("zzz")]);
+
+    let selection = index.planned_candidates_for_regex_plan(&plan);
+
+    assert!(selection.candidates.is_empty());
+    assert_eq!(selection.diagnostics.candidate_count, 0);
+    assert!(!selection.diagnostics.fell_back_to_full_scan);
+}
+
+#[test]
+fn regex_planner_common_pattern_falls_back_to_full_scan() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("a.rs", "abc one"),
+        ("b.rs", "abc two"),
+        ("c.rs", "abc three"),
+    ]));
+    let plan = RegexCandidatePlan::And(vec![Trigram::from("abc")]);
+
+    let selection = index.planned_candidates_for_regex_plan(&plan);
+
+    assert_eq!(selection.diagnostics.full_corpus_count, 3);
+    assert_eq!(selection.diagnostics.candidate_count, 3);
+    assert_eq!(selection.diagnostics.selected_trigram_count, 0);
+    assert!(selection.diagnostics.fell_back_to_full_scan);
+}
+
+#[test]
+fn regex_planner_plans_alternation_branches_independently() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("first.rs", "abc---xyz"),
+        ("second.rs", "def---uvw"),
+        ("common_a.rs", "abc---def"),
+        ("common_b.rs", "abc---def"),
+    ]));
+    let plan = RegexCandidatePlan::Or(vec![
+        RegexCandidatePlan::And(vec![Trigram::from("abc"), Trigram::from("xyz")]),
+        RegexCandidatePlan::And(vec![Trigram::from("def"), Trigram::from("uvw")]),
+    ]);
+
+    let selection = index.planned_candidates_for_regex_plan(&plan);
+    let selected = selection
+        .diagnostics
+        .selected_trigrams
+        .iter()
+        .map(Trigram::as_str)
+        .collect::<Vec<_>>();
+
+    assert_eq!(selected, ["xyz", "uvw"]);
+    assert_eq!(selection.diagnostics.candidate_count, 2);
+    assert!(
+        selection
+            .candidates
+            .contains(&index.doc_id(Path::new("first.rs")).unwrap())
+    );
+    assert!(
+        selection
+            .candidates
+            .contains(&index.doc_id(Path::new("second.rs")).unwrap())
+    );
+}
+
+#[test]
+fn regex_planner_selective_pattern_uses_fewer_candidates_than_corpus() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "rare_literal"),
+        ("a.rs", "common text"),
+        ("b.rs", "more text"),
+    ]));
+
+    let selection = index.planned_candidates_for_regex("rare_literal");
+
+    assert_eq!(selection.diagnostics.full_corpus_count, 3);
+    assert_eq!(selection.diagnostics.candidate_count, 1);
+    assert!(selection.diagnostics.candidate_count < index.num_docs());
+}
+
+#[test]
 fn unsupported_regex_constructs_fall_back_to_broader_candidates() {
     let index = TrigramIndex::with_corpus(TestCorpus::new(&[
         ("match.rs", "foo123bar"),
