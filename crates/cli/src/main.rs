@@ -11,7 +11,10 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::Parser;
-use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher, event::ModifyKind};
+use notify::{
+    Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    event::{ModifyKind, RemoveKind},
+};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper_core::{
     config::Config as ReaperConfig,
@@ -112,6 +115,14 @@ fn main() -> Result<()> {
                 Ok(event) => match event {
                     Ok(event) => match event.kind {
                         EventKind::Modify(ModifyKind::Metadata(_)) => continue,
+                        EventKind::Remove(RemoveKind::File | RemoveKind::Any) => {
+                            event.paths.par_iter().for_each(|path| {
+                                inverted_index_clone_for_thread
+                                    .lock()
+                                    .expect("index lock poisoned")
+                                    .remove_document(path);
+                            });
+                        }
                         _ => {
                             event.paths.par_iter().for_each(|path| {
                                 let path_clone = path.clone();
@@ -252,7 +263,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
                 })
                 .collect();
 
-            relevant_docs.sort_by(|a, b| a.1.cmp(&b.1));
+            relevant_docs.sort_by_key(|a| a.1);
 
             TestQuery {
                 query: example.query.clone(),
