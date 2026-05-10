@@ -124,6 +124,10 @@ impl InvertedIndex {
     }
 
     pub fn avg_doc_length(&self) -> f64 {
+        if self.doc_count == 0 {
+            return 0.0;
+        }
+
         self.total_doc_length as f64 / self.doc_count as f64
     }
 
@@ -137,6 +141,8 @@ impl InvertedIndex {
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
+        self.remove_document(path);
+
         if let Ok(content) = Self::read_document(path) {
             Self::process_document(path, &content, transform_fn)
                 .into_iter()
@@ -145,6 +151,14 @@ impl InvertedIndex {
                 });
             self.recalculate_stats();
         }
+    }
+
+    pub fn remove_document(&mut self, path: &Path) {
+        self.postings.retain(|_, documents| {
+            documents.remove(path);
+            !documents.is_empty()
+        });
+        self.recalculate_stats();
     }
 
     fn recalculate_stats(&mut self) {
@@ -276,6 +290,13 @@ mod tests {
         assert_eq!(index.avg_doc_length(), 10.0);
     }
 
+    #[test]
+    fn avg_doc_length_empty_index_is_zero() {
+        let index = build_index(&[]);
+
+        assert_eq!(index.avg_doc_length(), 0.0);
+    }
+
     fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) {
         let path = dir.join(name);
         if let Some(parent) = path.parent() {
@@ -333,5 +354,61 @@ mod tests {
         let path = docs.keys().next().unwrap();
 
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn update_removes_terms_that_no_longer_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "a.txt", "old shared");
+        let path = dir.path().join("a.txt");
+        let mut index = InvertedIndex::new(dir.path(), identity_transform, None::<&Path>);
+
+        write_temp_file(dir.path(), "a.txt", "new shared shared");
+        index.update(&path, &identity_transform);
+
+        assert!(index.get_postings(&Term("old".to_string())).is_none());
+
+        let new_docs = index.get_postings(&Term("new".to_string())).unwrap();
+        assert!(new_docs.contains_key(&path));
+
+        let shared_docs = index.get_postings(&Term("shared".to_string())).unwrap();
+        let shared = shared_docs.get(&path).unwrap();
+        assert_eq!(shared.length, 3);
+        assert_eq!(shared.term_freq, 2);
+        assert_eq!(index.num_docs(), 1);
+        assert_eq!(index.avg_doc_length(), 3.0);
+    }
+
+    #[test]
+    fn update_missing_file_removes_existing_document() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "a.txt", "token");
+        let path = dir.path().join("a.txt");
+        let mut index = InvertedIndex::new(dir.path(), identity_transform, None::<&Path>);
+
+        std::fs::remove_file(&path).unwrap();
+        index.update(&path, &identity_transform);
+
+        assert!(index.get_postings(&Term("token".to_string())).is_none());
+        assert_eq!(index.num_docs(), 0);
+        assert_eq!(index.avg_doc_length(), 0.0);
+    }
+
+    #[test]
+    fn remove_document_removes_only_that_document() {
+        let mut index = build_index(&[
+            ("a.rs", &[("shared", 1), ("only_a", 1)]),
+            ("b.rs", &[("shared", 2), ("only_b", 1)]),
+        ]);
+
+        index.remove_document(Path::new("a.rs"));
+
+        assert!(index.get_postings(&Term("only_a".to_string())).is_none());
+
+        let shared_docs = index.get_postings(&Term("shared".to_string())).unwrap();
+        assert!(!shared_docs.contains_key(Path::new("a.rs")));
+        assert!(shared_docs.contains_key(Path::new("b.rs")));
+        assert_eq!(index.num_docs(), 1);
+        assert_eq!(index.avg_doc_length(), 3.0);
     }
 }
