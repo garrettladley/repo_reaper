@@ -73,14 +73,14 @@ impl EvaluationCorpus {
 pub struct RawExample {
     pub query: String,
     pub narrative: String,
-    pub query_shape: Option<QueryShape>,
+    pub query_shape: QueryShape,
     pub results: Vec<RawResultData>,
 }
 
 pub struct Example {
     pub query: AnalyzedQuery,
     pub narrative: String,
-    pub query_shape: Option<QueryShape>,
+    pub query_shape: QueryShape,
     pub results: Vec<ResultData>,
 }
 
@@ -101,7 +101,9 @@ impl Example {
     }
 }
 
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(
+    serde::Deserialize, serde::Serialize, Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum QueryShape {
     Conceptual,
@@ -110,6 +112,7 @@ pub enum QueryShape {
     Identifier,
     Navigational,
     Path,
+    Regex,
     TestFinding,
 }
 
@@ -208,8 +211,38 @@ mod tests {
         let parsed = EvaluationData::parse(raw, &test_config()).unwrap();
 
         assert!(matches!(parsed.corpus, EvaluationCorpus::Tree { .. }));
-        assert_eq!(parsed.examples[0].query_shape, Some(QueryShape::Conceptual));
+        assert_eq!(parsed.examples[0].query_shape, QueryShape::Conceptual);
         assert_eq!(parsed.examples[0].results[0].evidence[0].start_line, 35);
+    }
+
+    #[test]
+    fn parse_accepts_all_query_shapes() {
+        for (raw_shape, expected_shape) in [
+            ("navigational", QueryShape::Navigational),
+            ("conceptual", QueryShape::Conceptual),
+            ("identifier", QueryShape::Identifier),
+            ("path", QueryShape::Path),
+            ("regex", QueryShape::Regex),
+            ("error_message", QueryShape::ErrorMessage),
+            ("configuration", QueryShape::Configuration),
+            ("test_finding", QueryShape::TestFinding),
+        ] {
+            let raw = format!(
+                r#"{{
+                    "local_root": "crates",
+                    "examples": [{{
+                        "query": "{raw_shape}",
+                        "narrative": "shape parse",
+                        "query_shape": "{raw_shape}",
+                        "results": []
+                    }}]
+                }}"#
+            );
+            let raw: RawEvaluationData = serde_json::from_str(&raw).unwrap();
+            let parsed = EvaluationData::parse(raw, &test_config()).unwrap();
+
+            assert_eq!(parsed.examples[0].query_shape, expected_shape);
+        }
     }
 
     #[test]
