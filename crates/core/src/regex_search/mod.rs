@@ -7,6 +7,10 @@ use std::{
 use regex::Regex;
 use walkdir::WalkDir;
 
+mod trigram_index;
+
+pub use trigram_index::{Trigram, TrigramIndex};
+
 #[derive(Debug, thiserror::Error)]
 pub enum RegexSearchError {
     #[error("invalid regex pattern")]
