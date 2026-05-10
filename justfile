@@ -24,7 +24,7 @@ test *ARGS:
 # run the checked-in repo-native evaluation smoke set
 [group("dev")]
 eval-smoke:
-    cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10
+    cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10 --fresh
 
 # compile the workspace
 [group("dev")]
