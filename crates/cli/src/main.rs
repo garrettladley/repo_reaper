@@ -19,8 +19,9 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper_core::{
     config::Config as ReaperConfig,
     evaluation::{
-        EvaluationCorpus, EvaluationData, RawEvaluationData, TestSet, dataset::Relevance,
-        metrics::TestQuery,
+        EvaluationCorpus, EvaluationData, RawEvaluationData, TestSet,
+        dataset::Relevance,
+        metrics::{GroundednessResult, TestQuery},
     },
     index::{CorpusStats, InvertedIndex},
     query::AnalyzedQuery,
@@ -336,13 +337,22 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
             let mut relevant_docs: Vec<_> = example
                 .results
                 .iter()
-                .filter_map(|result| match result.relevance {
-                    Relevance::Relevant(rank) => Some((result.path.clone(), rank)),
+                .filter_map(|result| match &result.relevance {
+                    Relevance::Relevant(rank) => Some((result.path.clone(), *rank)),
                     Relevance::NonRelevant => None,
                 })
                 .collect();
 
             relevant_docs.sort_by_key(|a| a.1);
+            let groundedness_results = example
+                .results
+                .iter()
+                .map(|result| GroundednessResult {
+                    path: result.path.clone(),
+                    relevant: matches!(&result.relevance, Relevance::Relevant(_)),
+                    evidence: result.evidence.clone(),
+                })
+                .collect();
 
             TestQuery {
                 query: example.query.clone(),
@@ -351,6 +361,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
                     .par_iter()
                     .map(|(path, _)| path.clone())
                     .collect::<Vec<_>>(),
+                groundedness_results,
             }
         })
         .collect();
@@ -375,6 +386,8 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
 
 fn print_pretty_evaluation(evaluation: &repo_reaper_core::evaluation::metrics::EvaluationReport) {
     println!("{}", evaluation.aggregate);
+    println!("\ngroundedness:");
+    println!("{}", evaluation.groundedness);
 
     if evaluation.slices.is_empty() {
         return;
