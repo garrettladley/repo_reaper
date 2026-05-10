@@ -263,7 +263,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
                 })
                 .collect();
 
-            relevant_docs.sort_by(|a, b| a.1.cmp(&b.1));
+            relevant_docs.sort_by_key(|a| a.1);
 
             TestQuery {
                 query: example.query.clone(),
