@@ -1,0 +1,308 @@
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+
+use super::{CorpusDocument, RegexCorpus, RegexSearchEngine, Trigram, TrigramIndex, trigrams};
+
+#[derive(Debug, Clone, Default)]
+struct TestCorpus {
+    documents: BTreeMap<PathBuf, String>,
+}
+
+impl TestCorpus {
+    fn new(documents: &[(&str, &str)]) -> Self {
+        Self {
+            documents: documents
+                .iter()
+                .map(|(path, content)| (PathBuf::from(path), (*content).to_string()))
+                .collect(),
+        }
+    }
+}
+
+impl RegexCorpus for TestCorpus {
+    fn documents(&self) -> Vec<CorpusDocument> {
+        self.documents
+            .iter()
+            .map(|(path, content)| CorpusDocument {
+                path: path.clone(),
+                content: content.clone(),
+            })
+            .collect()
+    }
+
+    fn read_document(&self, path: &Path) -> Option<String> {
+        self.documents.get(path).cloned()
+    }
+}
+
+#[test]
+fn search_returns_path_byte_range_line_range_and_matched_text() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("src/lib.rs");
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::write(&file, "alpha\nlet answer = 42;\nomega\n").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search(r"answer = \d+")
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    let match_ = &matches[0];
+    assert_eq!(match_.path, file);
+    assert_eq!(match_.byte_range, 10..21);
+    assert_eq!(match_.line_range, 2..=2);
+    assert_eq!(match_.matched_text, "answer = 42");
+}
+
+#[test]
+fn search_returns_multiple_matches_in_file_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("lib.rs");
+    std::fs::write(&file, "todo one\ntodo two\ntodo three\n").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search(r"todo \w+")
+        .unwrap();
+
+    let matched_text = matches
+        .iter()
+        .map(|match_| match_.matched_text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(matched_text, ["todo one", "todo two", "todo three"]);
+}
+
+#[test]
+fn search_returns_files_in_deterministic_path_order() {
+    let temp = tempfile::tempdir().unwrap();
+    write_file(temp.path(), "zeta.rs", "needle z").unwrap();
+    write_file(temp.path(), "alpha.rs", "needle a").unwrap();
+    write_file(temp.path(), "nested/beta.rs", "needle b").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search(r"needle \w")
+        .unwrap();
+
+    let names = matches
+        .iter()
+        .map(|match_| {
+            match_
+                .path
+                .strip_prefix(temp.path())
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["alpha.rs", "nested/beta.rs", "zeta.rs"]);
+}
+
+#[test]
+fn search_returns_error_for_invalid_patterns() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let error = RegexSearchEngine::new(temp.path()).search("(").unwrap_err();
+
+    assert!(error.to_string().contains("invalid regex pattern"));
+}
+
+#[test]
+fn search_uses_regex_line_boundary_flags_explicitly() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("lib.rs");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search(r"(?m)^beta$")
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].path, file);
+    assert_eq!(matches[0].byte_range, 6..10);
+    assert_eq!(matches[0].line_range, 2..=2);
+    assert_eq!(matches[0].matched_text, "beta");
+}
+
+#[test]
+fn search_reports_multiline_match_line_ranges() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("lib.rs");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search(r"(?s)alpha.*gamma")
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].path, file);
+    assert_eq!(matches[0].byte_range, 0..16);
+    assert_eq!(matches[0].line_range, 1..=3);
+    assert_eq!(matches[0].matched_text, "alpha\nbeta\ngamma");
+}
+
+#[test]
+fn search_skips_non_utf8_files() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("binary.bin"), [0xff, 0xfe, b'n', b'e']).unwrap();
+    std::fs::write(temp.path().join("text.txt"), "needle").unwrap();
+
+    let matches = RegexSearchEngine::new(temp.path())
+        .search("needle")
+        .unwrap();
+
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].matched_text, "needle");
+    assert_eq!(matches[0].path, temp.path().join("text.txt"));
+}
+
+#[test]
+fn trigrams_are_overlapping_character_windows() {
+    let trigrams = trigrams("abcd");
+
+    let values = trigrams.iter().map(Trigram::as_str).collect::<Vec<_>>();
+    assert_eq!(values, ["abc", "bcd"]);
+}
+
+#[test]
+fn trigrams_return_empty_for_short_strings() {
+    assert!(trigrams("").is_empty());
+    assert!(trigrams("a").is_empty());
+    assert!(trigrams("ab").is_empty());
+}
+
+#[test]
+fn trigrams_include_punctuation_whitespace_and_preserve_case() {
+    let trigrams = trigrams("A b!");
+
+    let values = trigrams.iter().map(Trigram::as_str).collect::<Vec<_>>();
+    assert_eq!(values, ["A b", " b!"]);
+}
+
+#[test]
+fn index_maps_every_indexed_doc_id_back_to_path() {
+    let first = PathBuf::from("a.rs");
+    let second = PathBuf::from("b.rs");
+    let index =
+        TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "abcdef"), ("b.rs", "uvwxyz")]));
+    let first_id = index.doc_id(&first).unwrap();
+    let second_id = index.doc_id(&second).unwrap();
+
+    assert_eq!(index.num_docs(), 2);
+    assert_eq!(index.document(first_id).unwrap().path, first);
+    assert_eq!(index.document(second_id).unwrap().path, second);
+}
+
+#[test]
+fn postings_record_documents_containing_each_trigram() {
+    let first = PathBuf::from("a.rs");
+    let second = PathBuf::from("b.rs");
+    let index =
+        TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "abcdef"), ("b.rs", "zabczz")]));
+    let postings = index.postings(&Trigram::from("abc")).unwrap();
+
+    assert!(postings.contains(&index.doc_id(&first).unwrap()));
+    assert!(postings.contains(&index.doc_id(&second).unwrap()));
+}
+
+#[test]
+fn literal_candidates_are_supersets_of_true_matches() {
+    let matching = PathBuf::from("match.rs");
+    let false_positive = PathBuf::from("false_positive.rs");
+    let missing = PathBuf::from("missing.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "xxabcdefxx"),
+        ("false_positive.rs", "abc bcd cde def"),
+        ("missing.rs", "abxde"),
+    ]));
+    let candidates = index.candidates_for_literal("abcdef");
+
+    assert!(candidates.contains(&index.doc_id(&matching).unwrap()));
+    assert!(candidates.contains(&index.doc_id(&false_positive).unwrap()));
+    assert!(!candidates.contains(&index.doc_id(&missing).unwrap()));
+}
+
+#[test]
+fn short_literal_candidates_include_all_indexed_documents() {
+    let first = PathBuf::from("a.rs");
+    let second = PathBuf::from("b.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "a"), ("b.rs", "b")]));
+    let candidates = index.candidates_for_literal("ab");
+
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.contains(&index.doc_id(&first).unwrap()));
+    assert!(candidates.contains(&index.doc_id(&second).unwrap()));
+}
+
+#[test]
+fn literal_search_verifies_candidates_and_reports_candidate_count() {
+    let matching = PathBuf::from("match.rs");
+    let result = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "xxabcdefxx"),
+        ("false_positive.rs", "abc bcd cde def"),
+        ("missing.rs", "unrelated"),
+    ]))
+    .search_literal("abcdef");
+
+    assert_eq!(result.candidate_count, 2);
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.matches[0].path, matching);
+    assert_eq!(result.matches[0].byte_range, 2..8);
+    assert_eq!(result.matches[0].line_range, 1..=1);
+    assert_eq!(result.matches[0].matched_text, "abcdef");
+}
+
+#[test]
+fn literal_search_matches_full_scan_results() {
+    let result = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("a.rs", "needle one\nneedle two\n"),
+        ("nested/b.rs", "no match here"),
+        ("z.rs", "needle three"),
+    ]))
+    .search_literal("needle");
+
+    let matched_paths = result
+        .matches
+        .iter()
+        .map(|match_| match_.path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(matched_paths, ["a.rs", "a.rs", "z.rs"]);
+    assert_eq!(result.matches[0].byte_range, 0..6);
+    assert_eq!(result.matches[1].byte_range, 11..17);
+    assert_eq!(result.matches[2].byte_range, 0..6);
+}
+
+#[test]
+fn short_literal_search_falls_back_to_all_documents() {
+    let first = PathBuf::from("a.rs");
+    let result = TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "aba"), ("b.rs", "zzz")]))
+        .search_literal("ab");
+
+    assert_eq!(result.candidate_count, 2);
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.matches[0].path, first);
+    assert_eq!(result.matches[0].byte_range, 0..2);
+}
+
+#[test]
+fn selective_literal_search_uses_fewer_candidates_than_corpus() {
+    let matching = PathBuf::from("match.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "rare_literal"),
+        ("a.rs", "common text"),
+        ("b.rs", "more text"),
+    ]));
+    let result = index.search_literal("rare_literal");
+
+    assert_eq!(index.num_docs(), 3);
+    assert_eq!(result.candidate_count, 1);
+    assert_eq!(result.matches[0].path, matching);
+}
+
+fn write_file(root: &Path, path: &str, content: &str) -> std::io::Result<()> {
+    let path = root.join(path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, content)
+}
