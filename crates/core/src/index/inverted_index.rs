@@ -21,6 +21,22 @@ pub struct TermDocument {
     pub term_freq: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorpusStats {
+    pub document_count: usize,
+    pub total_token_count: u64,
+    pub vocabulary_size: usize,
+    pub singleton_term_count: usize,
+    pub high_frequency_terms: Vec<TermFrequencySummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermFrequencySummary {
+    pub term: String,
+    pub collection_frequency: usize,
+    pub document_frequency: usize,
+}
+
 #[derive(Debug)]
 pub struct InvertedIndex<R = DocumentRegistry> {
     postings: HashMap<Term, HashMap<DocId, TermDocument>>,
@@ -206,6 +222,40 @@ where
 
     pub fn avg_doc_length(&self) -> f64 {
         self.documents.avg_doc_length()
+    }
+
+    pub fn corpus_stats(&self, high_frequency_limit: usize) -> CorpusStats {
+        let mut term_summaries: Vec<TermFrequencySummary> = self
+            .postings
+            .iter()
+            .map(|(term, documents)| TermFrequencySummary {
+                term: term.0.clone(),
+                collection_frequency: documents.values().map(|doc| doc.term_freq).sum(),
+                document_frequency: documents.len(),
+            })
+            .collect();
+
+        let singleton_term_count = term_summaries
+            .iter()
+            .filter(|summary| summary.collection_frequency == 1)
+            .count();
+
+        term_summaries.sort_by(|left, right| {
+            right
+                .collection_frequency
+                .cmp(&left.collection_frequency)
+                .then_with(|| right.document_frequency.cmp(&left.document_frequency))
+                .then_with(|| left.term.cmp(&right.term))
+        });
+        term_summaries.truncate(high_frequency_limit);
+
+        CorpusStats {
+            document_count: self.documents.len(),
+            total_token_count: self.documents.total_token_length(),
+            vocabulary_size: self.postings.len(),
+            singleton_term_count,
+            high_frequency_terms: term_summaries,
+        }
     }
 
     pub fn doc_id(&self, path: &Path) -> Option<DocId> {
@@ -440,6 +490,47 @@ mod tests {
         let index = build_index(&[]);
 
         assert_eq!(index.avg_doc_length(), 0.0);
+    }
+
+    #[test]
+    fn corpus_stats_reports_document_and_term_totals() {
+        let index = build_index(&[
+            ("a.rs", &[("shared", 2), ("only_a", 1)]),
+            ("b.rs", &[("shared", 1), ("only_b", 4)]),
+        ]);
+
+        let stats = index.corpus_stats(10);
+
+        assert_eq!(stats.document_count, 2);
+        assert_eq!(stats.total_token_count, 8);
+        assert_eq!(stats.vocabulary_size, 3);
+        assert_eq!(stats.singleton_term_count, 1);
+    }
+
+    #[test]
+    fn corpus_stats_reports_high_frequency_terms_in_stable_order() {
+        let index = build_index(&[
+            ("a.rs", &[("shared", 2), ("alpha", 3), ("zeta", 1)]),
+            ("b.rs", &[("shared", 2), ("beta", 3)]),
+        ]);
+
+        let stats = index.corpus_stats(3);
+        let terms: Vec<_> = stats
+            .high_frequency_terms
+            .iter()
+            .map(|summary| {
+                (
+                    summary.term.as_str(),
+                    summary.collection_frequency,
+                    summary.document_frequency,
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            terms,
+            vec![("shared", 4, 2), ("alpha", 3, 1), ("beta", 3, 1)]
+        );
     }
 
     fn write_temp_file(dir: &std::path::Path, name: &str, content: &str) {
