@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use notify::{
@@ -19,7 +19,8 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use repo_reaper_core::{
     config::Config as ReaperConfig,
     evaluation::{
-        EvaluationData, RawEvaluationData, TestSet, dataset::Relevance, metrics::TestQuery,
+        EvaluationCorpus, EvaluationData, RawEvaluationData, TestSet, dataset::Relevance,
+        metrics::TestQuery,
     },
     index::InvertedIndex,
     query::Query,
@@ -49,6 +50,9 @@ struct Args {
     /// Evaluation output format
     #[clap(long, value_enum, default_value = "pretty")]
     eval_format: EvalOutputFormat,
+    /// Evaluation data JSON
+    #[clap(long, default_value = "./data/train.json")]
+    eval_data: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -228,35 +232,53 @@ fn log_query(
 }
 
 fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
-    let file_content =
-        fs::read_to_string("./data/train.json").context("failed to read training data")?;
+    let file_content = fs::read_to_string(&args.eval_data).with_context(|| {
+        format!(
+            "failed to read evaluation data from {}",
+            args.eval_data.display()
+        )
+    })?;
 
-    let raw_evaluation_data: RawEvaluationData =
-        serde_json::from_str(&file_content).context("failed to deserialize training JSON data")?;
+    let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
+        .context("failed to deserialize evaluation JSON data")?;
 
     let evaluation_data = EvaluationData::parse(raw_evaluation_data, config)
         .context("failed to parse evaluation data")?;
 
-    let path = "./data/repo";
+    let index_root = match &evaluation_data.corpus {
+        EvaluationCorpus::Tree { root } => root.clone(),
+        EvaluationCorpus::Git { repo, commit, root } => {
+            let path = PathBuf::from("./data/repo");
+            if path.exists() {
+                fs::remove_dir_all(&path).context("failed to clean previous evaluation repo")?;
+            }
 
-    Command::new("git")
-        .arg("clone")
-        .arg(evaluation_data.repo.to_string())
-        .arg(path)
-        .output()
-        .context("failed to execute git clone")?;
+            let clone_output = Command::new("git")
+                .arg("clone")
+                .arg(repo)
+                .arg(&path)
+                .output()
+                .context("failed to execute git clone")?;
 
-    Command::new("git")
-        .arg("checkout")
-        .arg(evaluation_data.commit)
-        .current_dir(path)
-        .output()
-        .context("failed to execute git checkout")?;
+            ensure_command_succeeded("git clone", clone_output)?;
+
+            let checkout_output = Command::new("git")
+                .arg("checkout")
+                .arg(commit)
+                .current_dir(&path)
+                .output()
+                .context("failed to execute git checkout")?;
+
+            ensure_command_succeeded("git checkout", checkout_output)?;
+
+            path.join(root)
+        }
+    };
 
     let inverted_index = InvertedIndex::new(
-        path,
+        index_root.as_path(),
         |content: &str| n_gram_transform(content, config),
-        Some(path),
+        Some(index_root.as_path()),
     );
 
     let queries = evaluation_data
@@ -300,4 +322,16 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn ensure_command_succeeded(command: &str, output: std::process::Output) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    bail!(
+        "{command} failed with status {status}: {stderr}",
+        status = output.status,
+        stderr = String::from_utf8_lossy(&output.stderr).trim()
+    );
 }

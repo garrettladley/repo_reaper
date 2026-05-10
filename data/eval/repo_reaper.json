@@ -1,0 +1,665 @@
+{
+  "repo_path": ".",
+  "commit": "e1c073836d733d68664aa53aa970bafbdf45c1c0",
+  "local_root": "crates",
+  "examples": [
+    {
+      "query": "build inverted index from files with walkdir",
+      "narrative": "Find where the corpus is walked and file contents become postings.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "WalkDir reads files, optionally strips the root prefix, and reduces per-file term maps into postings.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 41,
+              "end_line": 79,
+              "snippet": "pub fn new<P, F>(root: P, transform_fn: F, drop_prefix: Option<P>) -> Self"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "strip root prefix from indexed document paths",
+      "narrative": "Find the path normalization used when building an index for evaluation.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "The index path is derived by stripping the configured drop prefix from the full path.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 57,
+              "end_line": 64,
+              "snippet": "full_path.strip_prefix(prefix).unwrap_or(&full_path).to_owned()"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "process document term frequencies document length postings",
+      "narrative": "Find where transformed term frequencies are converted into posting entries.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "process_document stores term frequency and document length for each term-document pair.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 86,
+              "end_line": 110,
+              "snippet": "let term_frequencies = transform_fn(content);"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "average document length for BM25",
+      "narrative": "Find the index statistic used by BM25 length normalization.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "avg_doc_length returns zero for empty indexes and otherwise divides total document length by document count.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 126,
+              "end_line": 132,
+              "snippet": "pub fn avg_doc_length(&self) -> f64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "where do we clean old tokens when a file changes",
+      "narrative": "Find the stale posting guard used when a watched file changes, phrased without exact API names.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "update calls remove_document before reading the current file and extending postings with fresh terms.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 140,
+              "end_line": 153,
+              "snippet": "self.remove_document(path);"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "remove deleted file from postings",
+      "narrative": "Find the code that removes a document from all posting lists.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "remove_document removes the path from every document map, drops empty posting lists, and recalculates stats.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 156,
+              "end_line": 162,
+              "snippet": "documents.remove(path);"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "tokenizer lowercases removes stop words stems ngrams",
+      "narrative": "Find the tokenization pipeline from raw text to n-gram terms.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/tokenizer/pipeline.rs",
+          "content": "n_gram_transform lowercases, splits, removes stop words, stems tokens, builds sliding n-gram windows, and counts term frequencies.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 7,
+              "end_line": 28,
+              "snippet": "pub fn n_gram_transform(content: &str, config: &Config) -> HashMap<Term, u32>"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "query uses tokenizer n gram transform",
+      "narrative": "Find where user queries are normalized into the same term representation as documents.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/query.rs",
+          "content": "Query::new wraps n_gram_transform so query terms share the document tokenizer.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 10,
+              "end_line": 13,
+              "snippet": "Self(n_gram_transform(query, config))"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "what turns text into searchable terms before scoring",
+      "narrative": "Find the document and query text normalization path without using exact function names.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/tokenizer/pipeline.rs",
+          "content": "The tokenizer lowercases, filters, stems, creates n-grams, and counts searchable terms.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 7,
+              "end_line": 28,
+              "snippet": "pub fn n_gram_transform(content: &str, config: &Config) -> HashMap<Term, u32>"
+            }
+          ]
+        },
+        {
+          "path": "core/src/query.rs",
+          "content": "Query::new sends query text through the same n-gram transform used by documents.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 10,
+              "end_line": 13,
+              "snippet": "Self(n_gram_transform(query, config))"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "bm25 hyperparameters load configuration bm25 yml",
+      "narrative": "Find where BM25 k1 and b are loaded from configuration.",
+      "query_shape": "configuration",
+      "results": [
+        {
+          "path": "core/src/ranking/bm25.rs",
+          "content": "get_configuration reads configuration/bm25.yml and deserializes BM25HyperParams.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 13,
+              "end_line": 28,
+              "snippet": "pub struct BM25HyperParams"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "which code calculates collection statistics used during scoring",
+      "narrative": "Find both the index-side statistics and a scorer that consumes them.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "The index exposes document count, document frequency, and average document length statistics.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 122,
+              "end_line": 137,
+              "snippet": "pub fn avg_doc_length(&self) -> f64"
+            }
+          ]
+        },
+        {
+          "path": "core/src/ranking/bm25.rs",
+          "content": "BM25 consumes average document length, document count, and document frequency-derived IDF while scoring.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 42,
+              "end_line": 55,
+              "snippet": "let avgdl = inverted_index.avg_doc_length();"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "bm25 scoring formula length normalization",
+      "narrative": "Find the BM25 scoring formula and document length normalization.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/bm25.rs",
+          "content": "BM25 score uses IDF, term frequency, k1, b, document length, and average document length.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 34,
+              "end_line": 57,
+              "snippet": "let score = idf * (tf * (self.hyper_params.k1 + 1.0))"
+            }
+          ]
+        },
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "The index exposes avg_doc_length, the collection statistic BM25 uses for length normalization.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 126,
+              "end_line": 132,
+              "snippet": "pub fn avg_doc_length(&self) -> f64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "how are candidate documents combined then ordered",
+      "narrative": "Find the scoring fan-out and ranking cutoff logic without naming rank or score APIs directly.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/scorer.rs",
+          "content": "RankingAlgo scores every query term, merges scores by document, sorts descending, and truncates to top_n.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 60,
+              "end_line": 112,
+              "snippet": "ranking.sort_by(|a, b| b.score.total_cmp(&a.score));"
+            }
+          ]
+        },
+        {
+          "path": "core/src/index/inverted_index.rs",
+          "content": "The inverted index provides the posting lists that candidate scoring iterates over for query terms.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 113,
+              "end_line": 119,
+              "snippet": "pub fn get_postings(&self, term: &Term)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "tf idf term density score",
+      "narrative": "Find the TF-IDF scoring implementation and its term-frequency normalization.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/tf_idf.rs",
+          "content": "TFIDF divides term frequency by document length, multiplies by IDF, and accumulates scores by document.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 14,
+              "end_line": 33,
+              "snippet": "let tf = term_doc.term_freq as f64 / term_doc.length as f64;"
+            }
+          ]
+        },
+        {
+          "path": "core/src/ranking/utils.rs",
+          "content": "The shared idf helper supplies the inverse document frequency component for TF-IDF.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 1,
+              "end_line": 3,
+              "snippet": "pub fn idf(doc_count: usize, doc_freq: usize) -> f64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "cosine similarity query magnitude document magnitude tfidf weights",
+      "narrative": "Find the cosine scorer implementation that computes query and document vector magnitudes.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/cosine_similarity.rs",
+          "content": "CosineSimilarity computes query magnitude, dot product, and per-document magnitude using TF-IDF weights.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 14,
+              "end_line": 55,
+              "snippet": "let query_magnitude = query.0.par_iter()"
+            }
+          ]
+        },
+        {
+          "path": "core/src/ranking/utils.rs",
+          "content": "Cosine similarity uses the shared idf helper while building query and document vector weights.",
+          "relevant": true,
+          "rank": 2,
+          "evidence": [
+            {
+              "start_line": 1,
+              "end_line": 3,
+              "snippet": "pub fn idf(doc_count: usize, doc_freq: usize) -> f64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "inverse document frequency formula",
+      "narrative": "Find the shared IDF helper used by ranking algorithms.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/ranking/utils.rs",
+          "content": "idf computes ln((doc_count + 1) / (doc_freq + 0.5)).",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 1,
+              "end_line": 3,
+              "snippet": "pub fn idf(doc_count: usize, doc_freq: usize) -> f64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "ranking algorithm dispatch scorer box",
+      "narrative": "Find where the selected ranking algorithm is mapped to a concrete scorer.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/scorer.rs",
+          "content": "RankingAlgo::score dispatches to CosineSimilarity, BM25, or TFIDF through a Scorer trait object.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 60,
+              "end_line": 88,
+              "snippet": "let scorer: Box<dyn Scorer> = match self"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "rank sort by descending score truncate top n",
+      "narrative": "Find where scored documents are ordered and cut to the requested result count.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/ranking/scorer.rs",
+          "content": "rank sorts by descending score with total_cmp, truncates to top_n, and returns None for empty rankings.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 91,
+              "end_line": 112,
+              "snippet": "ranking.sort_by(|a, b| b.score.total_cmp(&a.score));"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "ranking algorithm from string bm25 tfidf cosim",
+      "narrative": "Find the CLI parser for ranking algorithm names.",
+      "query_shape": "configuration",
+      "results": [
+        {
+          "path": "core/src/ranking/scorer.rs",
+          "content": "FromStr maps cosim, bm25, and tfidf strings into RankingAlgo variants.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 115,
+              "end_line": 130,
+              "snippet": "impl FromStr for RankingAlgo"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "precision recall map mrr ndcg evaluation metrics at k",
+      "narrative": "Find the primary ranked evaluation metrics and their aggregate struct.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "core/src/evaluation/metrics.rs",
+          "content": "Evaluation stores k, precision@k, recall@k, MAP, MRR, and NDCG.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 21,
+              "end_line": 29,
+              "snippet": "pub struct Evaluation"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "evaluate query at k cutoff relevant retrieved",
+      "narrative": "Find the per-query ranked metric computation.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/evaluation/metrics.rs",
+          "content": "evaluate_query_at_k cuts the ranking to k, counts relevant retrieved documents, and fills ranked metrics.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 50,
+              "end_line": 83,
+              "snippet": "pub fn evaluate_query_at_k"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "mean average precision at k",
+      "narrative": "Find the average precision calculation over ranked relevant hits.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/evaluation/metrics.rs",
+          "content": "average_precision_at_k accumulates precision at every relevant rank and divides by total relevant documents.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 85,
+              "end_line": 109,
+              "snippet": "fn average_precision_at_k"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "mean reciprocal rank first relevant document",
+      "narrative": "Find where MRR is computed from the first relevant result.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/evaluation/metrics.rs",
+          "content": "reciprocal_rank_at_k finds the first relevant ranked document and returns one over its one-based rank.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 111,
+              "end_line": 118,
+              "snippet": "fn reciprocal_rank_at_k"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "normalized discounted cumulative gain",
+      "narrative": "Find where NDCG and ideal DCG are computed.",
+      "query_shape": "identifier",
+      "results": [
+        {
+          "path": "core/src/evaluation/metrics.rs",
+          "content": "ndcg_at_k sums discounted relevant hits and divides by ideal discounted gain.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 120,
+              "end_line": 135,
+              "snippet": "fn ndcg_at_k"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "remote repo commit evaluation data schema",
+      "narrative": "Find the pinned training dataset schema used by the original evaluation path.",
+      "query_shape": "configuration",
+      "results": [
+        {
+          "path": "core/src/evaluation/dataset.rs",
+          "content": "RawEvaluationData stores the repository URL, commit, and examples for a pinned evaluation set.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 8,
+              "end_line": 32,
+              "snippet": "pub struct RawEvaluationData"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "relevant result missing rank evaluation dataset",
+      "narrative": "Find where relevant judgments are required to carry rank labels.",
+      "query_shape": "configuration",
+      "results": [
+        {
+          "path": "core/src/evaluation/dataset.rs",
+          "content": "ResultData converts relevant results into Relevance::Relevant and errors when rank is missing.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 67,
+              "end_line": 93,
+              "snippet": "Relevance::Relevant(raw.rank.ok_or(EvalError::MissingRank)?)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "cli evaluate flag pretty json output",
+      "narrative": "Find the CLI switches that trigger evaluation and select report rendering.",
+      "query_shape": "configuration",
+      "results": [
+        {
+          "path": "cli/src/main.rs",
+          "content": "Args exposes --evaluate and --eval-format for running the training evaluation and choosing pretty or JSON output.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 47,
+              "end_line": 52,
+              "snippet": "eval_format: EvalOutputFormat"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "file watcher remove event delete document index",
+      "narrative": "Find the file watcher branch that removes deleted files from the index.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "cli/src/main.rs",
+          "content": "The notify remove event branch calls remove_document for every removed path.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 129,
+              "end_line": 137,
+              "snippet": "EventKind::Remove(RemoveKind::File | RemoveKind::Any)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "query": "git clone checkout remote evaluation corpus",
+      "narrative": "Find the legacy remote evaluation path that clones a repo and checks out a commit.",
+      "query_shape": "conceptual",
+      "results": [
+        {
+          "path": "cli/src/main.rs",
+          "content": "Remote evaluation datasets clone the configured repository into data/repo and checkout the configured commit before indexing.",
+          "relevant": true,
+          "rank": 1,
+          "evidence": [
+            {
+              "start_line": 240,
+              "end_line": 254,
+              "snippet": "Command::new(\"git\").arg(\"clone\")"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
