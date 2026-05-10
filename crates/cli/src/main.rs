@@ -3,14 +3,14 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::Command as ProcessCommand,
     sync::{Arc, Mutex},
     thread,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use notify::{
     Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{ModifyKind, RemoveKind},
@@ -26,6 +26,7 @@ use repo_reaper_core::{
     index::{CorpusStats, InvertedIndex},
     query::AnalyzedQuery,
     ranking::RankingAlgo,
+    regex_search::{RegexSearchEngine, RegexSearchMatch},
     tokenizer::n_gram_transform,
 };
 use rust_stemmers::{Algorithm, Stemmer};
@@ -34,7 +35,7 @@ use rust_stemmers::{Algorithm, Stemmer};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// The directory to watch
-    #[clap(short, long, default_value = ".")]
+    #[clap(short, long, default_value = ".", global = true)]
     directory: PathBuf,
     /// n-grams
     #[clap(short, long, default_value = "1")]
@@ -69,6 +70,17 @@ struct Args {
     /// Print corpus statistics for the indexed directory and exit
     #[clap(long, default_value = "false")]
     stats: bool,
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Search files with a regular expression and exact verification
+    Regex {
+        /// Regex pattern to search for
+        pattern: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -143,6 +155,11 @@ struct TokenEfficiencyComparison {
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    if let Some(Commands::Regex { pattern }) = &args.command {
+        run_regex_search(&args.directory, pattern)?;
+        return Ok(());
+    }
 
     let config = Arc::new(ReaperConfig {
         n_grams: args.n_grams,
@@ -372,7 +389,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
             let path = args.eval_workdir.clone();
             prepare_git_eval_workdir(&path, args.fresh)?;
 
-            let clone_output = Command::new("git")
+            let clone_output = ProcessCommand::new("git")
                 .arg("clone")
                 .arg(repo)
                 .arg(&path)
@@ -381,7 +398,7 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
 
             ensure_command_succeeded("git clone", clone_output)?;
 
-            let checkout_output = Command::new("git")
+            let checkout_output = ProcessCommand::new("git")
                 .arg("checkout")
                 .arg(commit)
                 .current_dir(&path)
@@ -492,6 +509,38 @@ fn evaluate_training(args: &Args, config: &ReaperConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_regex_search(directory: &Path, pattern: &str) -> Result<()> {
+    let matches = RegexSearchEngine::new(directory).search(pattern)?;
+
+    if matches.is_empty() {
+        println!("No regex matches found");
+        return Ok(());
+    }
+
+    for match_ in &matches {
+        print_regex_match(match_);
+    }
+
+    Ok(())
+}
+
+fn print_regex_match(match_: &RegexSearchMatch) {
+    let line_start = match_.line_range.start();
+    let line_end = match_.line_range.end();
+    let matched_text = match_
+        .matched_text
+        .chars()
+        .flat_map(char::escape_debug)
+        .collect::<String>();
+
+    println!(
+        "{path}:bytes {byte_start}..{byte_end}:lines {line_start}..{line_end}: {matched_text}",
+        path = match_.path.display(),
+        byte_start = match_.byte_range.start,
+        byte_end = match_.byte_range.end,
+    );
 }
 
 fn print_pretty_evaluation(evaluation: &repo_reaper_core::evaluation::metrics::EvaluationReport) {

@@ -4,4 +4,5 @@ pub mod evaluation;
 pub mod index;
 pub mod query;
 pub mod ranking;
+pub mod regex_search;
 pub mod tokenizer;

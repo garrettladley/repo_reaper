@@ -18,6 +18,7 @@ rayon = "^1.11"
 url = "^2.5"
 dashmap = "^6"
 thiserror = "^2.0"
+regex = "^1.12"
 
 [dev-dependencies]
 criterion = "^0.5"
