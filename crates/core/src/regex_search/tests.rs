@@ -481,6 +481,53 @@ fn regex_planner_selective_pattern_uses_fewer_candidates_than_corpus() {
 }
 
 #[test]
+fn refreshing_document_adds_new_file_without_full_reindex() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut index = TrigramIndex::new(temp.path());
+    let file = temp.path().join("new.rs");
+    std::fs::write(&file, "fresh_needle").unwrap();
+
+    index.refresh_document(&file);
+    let result = index.search_literal("fresh_needle");
+
+    assert_eq!(index.num_docs(), 1);
+    assert_eq!(result.candidate_count, 1);
+    assert_eq!(result.matches.len(), 1);
+    assert_eq!(result.matches[0].path, file);
+}
+
+#[test]
+fn refreshing_document_removes_stale_postings_for_modified_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("lib.rs");
+    std::fs::write(&file, "old_needle").unwrap();
+    let mut index = TrigramIndex::new(temp.path());
+    std::fs::write(&file, "new_needle").unwrap();
+
+    index.refresh_document(&file);
+
+    assert!(index.search_literal("old_needle").matches.is_empty());
+    assert_eq!(index.search_literal("new_needle").matches.len(), 1);
+}
+
+#[test]
+fn removing_document_prevents_deleted_file_from_leaking_candidates() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("lib.rs");
+    std::fs::write(&file, "deleted_needle").unwrap();
+    let mut index = TrigramIndex::new(temp.path());
+    std::fs::remove_file(&file).unwrap();
+
+    let removed = index.remove_document(&file);
+    let result = index.search_literal("deleted_needle");
+
+    assert!(removed);
+    assert_eq!(index.num_docs(), 0);
+    assert_eq!(result.candidate_count, 0);
+    assert!(result.matches.is_empty());
+}
+
+#[test]
 fn unsupported_regex_constructs_fall_back_to_broader_candidates() {
     let index = TrigramIndex::with_corpus(TestCorpus::new(&[
         ("match.rs", "foo123bar"),
