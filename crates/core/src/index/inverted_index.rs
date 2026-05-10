@@ -7,11 +7,13 @@ use std::{
 use rayon::iter::{ParallelBridge, ParallelIterator};
 use walkdir::WalkDir;
 
-use crate::index::{
-    document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
-    term::Term,
+use crate::{
+    index::{
+        document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+        term::Term,
+    },
+    ranking::idf,
 };
-use crate::ranking::idf;
 
 #[derive(Debug)]
 pub struct TermDocument {
