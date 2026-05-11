@@ -1,3 +1,4 @@
+mod candidate_mask;
 mod corpus;
 mod disk_postings;
 mod engine;

@@ -228,6 +228,96 @@ fn literal_candidates_are_supersets_of_true_matches() {
 }
 
 #[test]
+fn experimental_masks_reduce_phrase_like_literal_false_positives() {
+    let matching = PathBuf::from("match.rs");
+    let plain_false_positive = PathBuf::from("plain_false_positive.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "xxabcdefxx"),
+        ("plain_false_positive.rs", "abc bcd cde def"),
+        ("missing.rs", "abxde"),
+    ]));
+
+    let plain_candidates = index.candidates_for_literal("abcdef");
+    let masked_candidates = index.experimental_masked_candidates_for_literal("abcdef");
+
+    assert_eq!(plain_candidates.len(), 2);
+    assert!(plain_candidates.contains(&index.doc_id(&plain_false_positive).unwrap()));
+    assert_eq!(masked_candidates.len(), 1);
+    assert!(masked_candidates.contains(&index.doc_id(&matching).unwrap()));
+}
+
+#[test]
+fn experimental_regex_masks_reduce_plain_literal_pattern_false_positives() {
+    let matching = PathBuf::from("match.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "xxabcdefxx"),
+        ("plain_false_positive.rs", "abc bcd cde def"),
+    ]));
+
+    let plain_candidates = index.candidates_for_regex("abcdef");
+    let masked_candidates = index.experimental_masked_candidates_for_regex("abcdef");
+
+    assert_eq!(plain_candidates.len(), 2);
+    assert_eq!(masked_candidates.len(), 1);
+    assert!(masked_candidates.contains(&index.doc_id(&matching).unwrap()));
+}
+
+#[test]
+fn experimental_regex_masks_fall_back_for_unsupported_patterns() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "foo123bar"),
+        ("other.rs", "fooabcbar"),
+    ]));
+
+    assert_eq!(
+        index.experimental_masked_candidates_for_regex(r"foo\d+bar"),
+        index.candidates_for_regex(r"foo\d+bar")
+    );
+}
+
+#[test]
+fn experimental_masks_keep_all_verified_literal_matches() {
+    let documents = [
+        ("start.rs", "abcdef at start"),
+        ("middle.rs", "xx abcdef yy"),
+        ("repeated.rs", "abcabc abcdef"),
+        ("false_positive.rs", "abc bcd cde def"),
+    ];
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&documents));
+    let masked_candidates = index.experimental_masked_candidates_for_literal("abcdef");
+
+    for (path, content) in documents {
+        if content.contains("abcdef") {
+            let doc_id = index.doc_id(Path::new(path)).unwrap();
+            assert!(masked_candidates.contains(&doc_id));
+        }
+    }
+}
+
+#[test]
+fn experimental_masks_fall_back_for_short_literals() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "ab"), ("b.rs", "zz")]));
+
+    assert_eq!(
+        index.experimental_masked_candidates_for_literal("ab"),
+        index.candidates_for_literal("ab")
+    );
+}
+
+#[test]
+fn experimental_masks_keep_repeated_overlapping_trigram_matches() {
+    let matching = PathBuf::from("match.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "aaaaaa"),
+        ("near.rs", "aaa aaa"),
+    ]));
+
+    let masked_candidates = index.experimental_masked_candidates_for_literal("aaaaa");
+
+    assert!(masked_candidates.contains(&index.doc_id(&matching).unwrap()));
+}
+
+#[test]
 fn short_literal_candidates_include_all_indexed_documents() {
     let first = PathBuf::from("a.rs");
     let second = PathBuf::from("b.rs");
