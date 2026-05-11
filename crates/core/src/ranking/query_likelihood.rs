@@ -1,5 +1,5 @@
 use crate::{
-    index::{DocId, InvertedIndex, Term},
+    index::{DocId, PostingList, RankedIndexReader, Term},
     query::AnalyzedQuery,
     ranking::{Score, Scored},
 };
@@ -34,9 +34,13 @@ pub struct QueryLikelihood {
 }
 
 impl QueryLikelihood {
-    pub fn score(&self, index: &InvertedIndex, query: &AnalyzedQuery) -> Scored {
+    pub fn score<I>(&self, index: &I, query: &AnalyzedQuery) -> Scored
+    where
+        I: RankedIndexReader,
+    {
         let scores = index
             .documents()
+            .into_iter()
             .map(|metadata| Score {
                 doc_path: metadata.path.clone(),
                 score: self.score_doc(index, query, metadata.id),
@@ -46,7 +50,10 @@ impl QueryLikelihood {
         Scored(scores)
     }
 
-    fn score_doc(&self, index: &InvertedIndex, query: &AnalyzedQuery, doc_id: DocId) -> f64 {
+    fn score_doc<I>(&self, index: &I, query: &AnalyzedQuery, doc_id: DocId) -> f64
+    where
+        I: RankedIndexReader,
+    {
         query
             .terms()
             .map(|(term, query_term)| {
@@ -57,14 +64,18 @@ impl QueryLikelihood {
 
     pub fn smoothed_term_probability(
         &self,
-        index: &InvertedIndex,
+        index: &impl RankedIndexReader,
         doc_id: DocId,
         term: &Term,
     ) -> f64 {
         let tf = index
-            .get_postings(term)
-            .and_then(|documents| documents.get(&doc_id))
-            .map_or(0.0, |term_doc| term_doc.term_freq as f64);
+            .postings(term)
+            .and_then(|documents| {
+                documents
+                    .get(doc_id)
+                    .map(|term_doc| term_doc.term_freq as f64)
+            })
+            .unwrap_or(0.0);
         let doc_len = index
             .document(doc_id)
             .map_or(0.0, |metadata| metadata.token_length as f64);
@@ -83,7 +94,7 @@ impl QueryLikelihood {
     }
 }
 
-fn collection_probability(index: &InvertedIndex, term: &Term) -> f64 {
+fn collection_probability(index: &impl RankedIndexReader, term: &Term) -> f64 {
     let total_tokens = index.total_token_count() as f64;
     if total_tokens == 0.0 {
         return f64::MIN_POSITIVE;

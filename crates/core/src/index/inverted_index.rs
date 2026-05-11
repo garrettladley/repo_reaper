@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -15,7 +15,7 @@ use crate::{
     tokenizer::{AnalyzerProfile, FileType},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TermDocument {
     pub length: usize,
     pub term_freq: usize,
@@ -48,7 +48,7 @@ impl TermDocument {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PositionList {
     first: u32,
     gaps: Vec<u32>,
@@ -87,7 +87,7 @@ impl PositionList {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CorpusStats {
     pub document_count: usize,
     pub total_token_count: u64,
@@ -96,7 +96,7 @@ pub struct CorpusStats {
     pub high_frequency_terms: Vec<TermFrequencySummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TermFrequencySummary {
     pub term: String,
     pub collection_frequency: usize,
@@ -121,9 +121,9 @@ impl IndexBuildReport {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InvertedIndex<R = DocumentRegistry> {
-    postings: HashMap<Term, HashMap<DocId, TermDocument>>,
+    postings: HashMap<Term, BTreeMap<DocId, TermDocument>>,
     documents: R,
     document_norms: HashMap<DocId, f64>,
 }
@@ -144,6 +144,23 @@ struct ProcessedDocument {
 type TestDocumentSpec<'a> = (&'a str, &'a [(&'a str, u32)], u64);
 
 impl InvertedIndex<DocumentRegistry> {
+    pub fn from_parts(
+        postings: HashMap<Term, BTreeMap<DocId, TermDocument>>,
+        documents: DocumentRegistry,
+    ) -> Self {
+        let document_norms = Self::compute_document_norms(&postings, documents.len());
+
+        Self {
+            postings,
+            documents,
+            document_norms,
+        }
+    }
+
+    pub fn documents_iter(&self) -> impl Iterator<Item = (&DocId, &DocumentMetadata)> {
+        self.documents.documents_iter()
+    }
+
     #[cfg(test)]
     pub(crate) fn from_documents(docs: &[(&str, &[(&str, u32)])]) -> Self {
         Self::from_documents_with_sizes(
@@ -157,7 +174,7 @@ impl InvertedIndex<DocumentRegistry> {
     #[cfg(test)]
     pub(crate) fn from_documents_with_sizes(docs: &[TestDocumentSpec<'_>]) -> Self {
         let mut documents = DocumentRegistry::new();
-        let mut postings: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
+        let mut postings: HashMap<Term, BTreeMap<DocId, TermDocument>> = HashMap::new();
 
         for &(path, terms, file_size_bytes) in docs {
             let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
@@ -278,7 +295,7 @@ where
         entry_path: &Path,
         content: &str,
         transform_fn: &F,
-    ) -> HashMap<Term, HashMap<DocId, TermDocument>>
+    ) -> HashMap<Term, BTreeMap<DocId, TermDocument>>
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
@@ -388,8 +405,8 @@ where
     fn postings_for_document(
         doc_id: DocId,
         document: &ProcessedDocument,
-    ) -> HashMap<Term, HashMap<DocId, TermDocument>> {
-        let mut local_map: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
+    ) -> HashMap<Term, BTreeMap<DocId, TermDocument>> {
+        let mut local_map: HashMap<Term, BTreeMap<DocId, TermDocument>> = HashMap::new();
 
         for (term, freq) in &document.term_frequencies {
             let field_frequencies = document
@@ -427,7 +444,7 @@ where
 
     fn insert_processed_document(
         registry: &mut impl DocumentCatalog,
-        postings: &mut HashMap<Term, HashMap<DocId, TermDocument>>,
+        postings: &mut HashMap<Term, BTreeMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
         let doc_id = registry.insert_or_update_with_fields(
@@ -443,11 +460,11 @@ where
         }
     }
 
-    pub fn get_postings(&self, term: &Term) -> Option<&HashMap<DocId, TermDocument>> {
+    pub fn get_postings(&self, term: &Term) -> Option<&BTreeMap<DocId, TermDocument>> {
         self.postings.get(term)
     }
 
-    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &HashMap<DocId, TermDocument>)> {
+    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &BTreeMap<DocId, TermDocument>)> {
         self.postings.iter()
     }
 
@@ -605,7 +622,7 @@ where
     }
 
     fn compute_document_norms(
-        postings: &HashMap<Term, HashMap<DocId, TermDocument>>,
+        postings: &HashMap<Term, BTreeMap<DocId, TermDocument>>,
         num_docs: usize,
     ) -> HashMap<DocId, f64> {
         let mut squared_weights = HashMap::new();
@@ -800,7 +817,7 @@ fn extract_string_literals(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet},
         path::{Path, PathBuf},
     };
 
@@ -827,7 +844,7 @@ mod tests {
     }
 
     fn get_term_doc<'a>(
-        result: &'a HashMap<Term, HashMap<DocId, super::TermDocument>>,
+        result: &'a HashMap<Term, BTreeMap<DocId, super::TermDocument>>,
         term: &str,
         doc_id: DocId,
     ) -> &'a super::TermDocument {

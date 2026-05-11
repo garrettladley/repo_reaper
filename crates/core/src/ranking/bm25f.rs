@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
 use dashmap::DashMap;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     error::RankingError,
-    index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
+    index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -48,11 +48,10 @@ pub struct BM25F {
 }
 
 impl BM25F {
-    pub fn weighted_term_frequency(
-        &self,
-        inverted_index: &InvertedIndex,
-        term_doc: &TermDocument,
-    ) -> f64 {
+    pub fn weighted_term_frequency<I>(&self, index: &I, term_doc: &TermDocument) -> f64
+    where
+        I: RankedIndexReader,
+    {
         if term_doc.field_frequencies.is_empty() {
             return term_doc.term_freq as f64;
         }
@@ -66,7 +65,7 @@ impl BM25F {
                 }
 
                 let field_length = term_doc.field_length(field) as f64;
-                let avg_field_length = inverted_index.avg_field_length(field);
+                let avg_field_length = index.avg_field_length(field);
                 if avg_field_length == 0.0 {
                     return 0.0;
                 }
@@ -90,24 +89,30 @@ impl BM25F {
 }
 
 impl Scorer for BM25F {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         _: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    ) {
-        let num_docs = inverted_index.num_docs();
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync,
+    {
+        let num_docs = index.num_docs();
         let idf = idf(num_docs, documents.len());
 
-        documents.par_iter().for_each(|(doc_id, term_doc)| {
-            let weighted_tf = self.weighted_term_frequency(inverted_index, term_doc);
-            let score = self.score_weighted_tf(query_term.weight, idf, weighted_tf);
+        documents
+            .iter()
+            .par_bridge()
+            .for_each(|(doc_id, term_doc)| {
+                let weighted_tf = self.weighted_term_frequency(index, term_doc);
+                let score = self.score_weighted_tf(query_term.weight, idf, weighted_tf);
 
-            *scores.entry(*doc_id).or_insert(0.0) += score;
-        });
+                *scores.entry(doc_id).or_insert(0.0) += score;
+            });
     }
 }
 

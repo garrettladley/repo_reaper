@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
+    index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
     query::{AnalyzedQuery, QueryPhrase},
 };
 
@@ -30,7 +30,7 @@ impl Default for ProximityConfig {
 }
 
 pub fn positional_bonus(
-    index: &InvertedIndex,
+    index: &impl RankedIndexReader,
     query: &AnalyzedQuery,
     doc_id: DocId,
     config: &ProximityConfig,
@@ -44,7 +44,11 @@ pub fn positional_bonus(
     phrase_bonus + proximity_bonus(index, query, doc_id, config)
 }
 
-pub fn phrase_match_count(index: &InvertedIndex, doc_id: DocId, phrase: &QueryPhrase) -> usize {
+pub fn phrase_match_count(
+    index: &impl RankedIndexReader,
+    doc_id: DocId,
+    phrase: &QueryPhrase,
+) -> usize {
     if phrase.terms.len() < 2 {
         return 0;
     }
@@ -56,7 +60,7 @@ pub fn phrase_match_count(index: &InvertedIndex, doc_id: DocId, phrase: &QueryPh
 }
 
 fn phrase_match_count_in_field(
-    index: &InvertedIndex,
+    index: &impl RankedIndexReader,
     doc_id: DocId,
     phrase: &QueryPhrase,
     field: DocumentField,
@@ -71,8 +75,9 @@ fn phrase_match_count_in_field(
     let rest_positions = phrase.terms[1..]
         .iter()
         .filter_map(|term| {
-            term_doc(index, term, doc_id)
-                .and_then(|term_doc| term_doc.field_positions(field))
+            let term_doc = term_doc(index, term, doc_id)?;
+            term_doc
+                .field_positions(field)
                 .map(|positions| positions.positions())
         })
         .collect::<Vec<_>>();
@@ -98,7 +103,7 @@ fn phrase_match_count_in_field(
 }
 
 fn proximity_bonus(
-    index: &InvertedIndex,
+    index: &impl RankedIndexReader,
     query: &AnalyzedQuery,
     doc_id: DocId,
     config: &ProximityConfig,
@@ -125,16 +130,15 @@ fn proximity_bonus(
 }
 
 fn minimum_covering_span(
-    index: &InvertedIndex,
+    index: &impl RankedIndexReader,
     doc_id: DocId,
     terms: &[Term],
     field: DocumentField,
 ) -> Option<u32> {
     let mut occurrences = Vec::new();
     for (term_idx, term) in terms.iter().enumerate() {
-        let positions = term_doc(index, term, doc_id)?
-            .field_positions(field)?
-            .positions();
+        let term_doc = term_doc(index, term, doc_id)?;
+        let positions = term_doc.field_positions(field)?.positions();
         for position in positions {
             occurrences.push((position, term_idx));
         }
@@ -159,9 +163,9 @@ fn minimum_covering_span(
             best = Some(best.map_or(span, |current: u32| current.min(span)));
 
             let left_term = occurrences[left].1;
-            let count = counts
-                .get_mut(&left_term)
-                .expect("left occurrence term should be counted");
+            let Some(count) = counts.get_mut(&left_term) else {
+                break;
+            };
             *count -= 1;
             if *count == 0 {
                 covered_terms -= 1;
@@ -173,6 +177,6 @@ fn minimum_covering_span(
     best
 }
 
-fn term_doc<'a>(index: &'a InvertedIndex, term: &Term, doc_id: DocId) -> Option<&'a TermDocument> {
-    index.get_postings(term)?.get(&doc_id)
+fn term_doc(index: &impl RankedIndexReader, term: &Term, doc_id: DocId) -> Option<TermDocument> {
+    index.postings(term)?.get(doc_id).cloned()
 }

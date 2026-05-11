@@ -5,7 +5,9 @@ use std::{
 
 use crate::{index::DocumentField, tokenizer::FileType};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DocId(u32);
 
 impl DocId {
@@ -18,7 +20,7 @@ impl DocId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocumentMetadata {
     pub id: DocId,
     pub path: PathBuf,
@@ -63,7 +65,7 @@ impl DocumentMetadata {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DocumentRegistry {
     documents: HashMap<DocId, DocumentMetadata>,
     path_to_id: HashMap<PathBuf, DocId>,
@@ -104,6 +106,10 @@ pub trait DocumentCatalog {
 impl DocumentRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn documents_iter(&self) -> impl Iterator<Item = (&DocId, &DocumentMetadata)> {
+        self.documents.iter()
     }
 }
 
