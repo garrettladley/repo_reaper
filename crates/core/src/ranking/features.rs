@@ -1,12 +1,17 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, Write},
+    path::PathBuf,
+};
 
 use crate::{
+    evaluation::dataset::{EvaluationData, Relevance},
     index::{DocumentField, InvertedIndex, Term},
     query::{AnalyzedQuery, QueryTermProvenance},
     ranking::{RankingAlgo, Score},
 };
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RankingFeatureRow {
     pub query_id: String,
     pub query: String,
@@ -18,13 +23,141 @@ pub struct RankingFeatureRow {
     pub expansion_provenance: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct PairwisePreferenceRow {
     pub query_id: String,
     pub preferred_doc: PathBuf,
     pub dispreferred_doc: PathBuf,
     pub preferred_relevance: usize,
     pub dispreferred_relevance: usize,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FeatureExportRecord {
+    Feature(RankingFeatureRow),
+    PairwisePreference(PairwisePreferenceRow),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FeatureIoError {
+    #[error("feature export I/O failed: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("feature record JSON failed: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+pub trait FeatureRecordSink {
+    type Error;
+
+    fn write_record(&mut self, record: &FeatureExportRecord) -> Result<(), Self::Error>;
+}
+
+pub trait FeatureRecordSource {
+    type Error;
+
+    fn read_records(&mut self) -> Result<Vec<FeatureExportRecord>, Self::Error>;
+}
+
+pub struct JsonlFeatureSink<W> {
+    writer: W,
+}
+
+impl<W> JsonlFeatureSink<W>
+where
+    W: Write,
+{
+    pub fn new(writer: W) -> Self {
+        Self { writer }
+    }
+}
+
+impl<W> FeatureRecordSink for JsonlFeatureSink<W>
+where
+    W: Write,
+{
+    type Error = FeatureIoError;
+
+    fn write_record(&mut self, record: &FeatureExportRecord) -> Result<(), Self::Error> {
+        serde_json::to_writer(&mut self.writer, record)?;
+        self.writer.write_all(b"\n")?;
+        Ok(())
+    }
+}
+
+pub struct JsonlFeatureSource<R> {
+    reader: R,
+}
+
+impl<R> JsonlFeatureSource<R>
+where
+    R: BufRead,
+{
+    pub fn new(reader: R) -> Self {
+        Self { reader }
+    }
+}
+
+impl<R> FeatureRecordSource for JsonlFeatureSource<R>
+where
+    R: BufRead,
+{
+    type Error = FeatureIoError;
+
+    fn read_records(&mut self) -> Result<Vec<FeatureExportRecord>, Self::Error> {
+        self.reader
+            .by_ref()
+            .lines()
+            .filter_map(|line| match line {
+                Ok(line) if line.trim().is_empty() => None,
+                other => Some(other),
+            })
+            .map(|line| {
+                let line = line?;
+                serde_json::from_str(&line).map_err(FeatureIoError::from)
+            })
+            .collect()
+    }
+}
+
+pub fn export_evaluation_features_to_sink<S>(
+    sink: &mut S,
+    index: &InvertedIndex,
+    ranking_algorithm: &RankingAlgo,
+    evaluation_data: &EvaluationData,
+    top_n: usize,
+) -> Result<(), S::Error>
+where
+    S: FeatureRecordSink,
+{
+    for (query_index, example) in evaluation_data.examples.iter().enumerate() {
+        let query_id = format!("q{}", query_index + 1);
+        let relevance = example
+            .results
+            .iter()
+            .filter_map(|result| match &result.relevance {
+                Relevance::Relevant(rank) => Some((result.path.clone(), *rank)),
+                Relevance::NonRelevant => None,
+            })
+            .collect::<BTreeMap<PathBuf, usize>>();
+
+        for row in export_feature_rows(
+            index,
+            ranking_algorithm,
+            &query_id,
+            &example.query,
+            top_n,
+            &relevance,
+        ) {
+            sink.write_record(&FeatureExportRecord::Feature(row))?;
+        }
+
+        for row in export_pairwise_preferences(&query_id, &relevance) {
+            sink.write_record(&FeatureExportRecord::PairwisePreference(row))?;
+        }
+    }
+
+    Ok(())
 }
 
 pub fn export_feature_rows(
@@ -174,7 +307,10 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{export_feature_rows, export_pairwise_preferences};
+    use super::{
+        FeatureExportRecord, FeatureRecordSink, FeatureRecordSource, JsonlFeatureSink,
+        JsonlFeatureSource, export_feature_rows, export_pairwise_preferences,
+    };
     use crate::{
         index::InvertedIndex,
         query::AnalyzedQuery,
@@ -217,5 +353,31 @@ mod tests {
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().any(|row| row.preferred_doc == Path::new("a.rs")
             && row.dispreferred_doc == Path::new("b.rs")));
+    }
+
+    #[test]
+    fn jsonl_sink_and_source_round_trip_feature_records() {
+        let mut bytes = Vec::new();
+        let record = FeatureExportRecord::PairwisePreference(super::PairwisePreferenceRow {
+            query_id: "q1".to_string(),
+            preferred_doc: PathBuf::from("a.rs"),
+            dispreferred_doc: PathBuf::from("b.rs"),
+            preferred_relevance: 1,
+            dispreferred_relevance: 2,
+        });
+
+        JsonlFeatureSink::new(&mut bytes)
+            .write_record(&record)
+            .unwrap();
+        let mut source = JsonlFeatureSource::new(std::io::Cursor::new(bytes));
+
+        let records = source.read_records().unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert!(matches!(
+            &records[0],
+            FeatureExportRecord::PairwisePreference(row)
+                if row.preferred_doc == Path::new("a.rs")
+        ));
     }
 }

@@ -1,8 +1,6 @@
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
-    io::Write,
-    path::{Path, PathBuf},
+    path::Path,
     process::Command as ProcessCommand,
 };
 
@@ -20,7 +18,7 @@ use repo_reaper_core::{
     query::QueryExpansionConfig,
     ranking::{
         RankingAlgo,
-        features::{PairwisePreferenceRow, RankingFeatureRow},
+        features::{JsonlFeatureSink, export_evaluation_features_to_sink},
     },
     tokenizer::n_gram_transform,
 };
@@ -313,13 +311,6 @@ fn read_evaluation_baseline(path: &Path) -> Result<EvaluationReport> {
     })
 }
 
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum FeatureExportRecord {
-    Feature(RankingFeatureRow),
-    PairwisePreference(PairwisePreferenceRow),
-}
-
 fn write_feature_export(
     path: &Path,
     inverted_index: &InvertedIndex,
@@ -327,45 +318,17 @@ fn write_feature_export(
     evaluation_data: &EvaluationData,
     top_n: usize,
 ) -> Result<()> {
-    let mut file = File::create(path)
+    let file = File::create(path)
         .with_context(|| format!("failed to create feature export at {}", path.display()))?;
-
-    for (index, example) in evaluation_data.examples.iter().enumerate() {
-        let query_id = format!("q{}", index + 1);
-        let relevance = example
-            .results
-            .iter()
-            .filter_map(|result| match &result.relevance {
-                Relevance::Relevant(rank) => Some((result.path.clone(), *rank)),
-                Relevance::NonRelevant => None,
-            })
-            .collect::<BTreeMap<PathBuf, usize>>();
-
-        for row in repo_reaper_core::ranking::features::export_feature_rows(
-            inverted_index,
-            ranking_algorithm,
-            &query_id,
-            &example.query,
-            top_n,
-            &relevance,
-        ) {
-            write_jsonl(&mut file, &FeatureExportRecord::Feature(row))?;
-        }
-
-        for row in
-            repo_reaper_core::ranking::features::export_pairwise_preferences(&query_id, &relevance)
-        {
-            write_jsonl(&mut file, &FeatureExportRecord::PairwisePreference(row))?;
-        }
-    }
-
-    Ok(())
-}
-
-fn write_jsonl(file: &mut File, record: &FeatureExportRecord) -> Result<()> {
-    serde_json::to_writer(&mut *file, record).context("failed to serialize feature record")?;
-    file.write_all(b"\n")
-        .context("failed to write feature record")?;
+    let mut sink = JsonlFeatureSink::new(file);
+    export_evaluation_features_to_sink(
+        &mut sink,
+        inverted_index,
+        ranking_algorithm,
+        evaluation_data,
+        top_n,
+    )
+    .context("failed to write feature export")?;
     Ok(())
 }
 
