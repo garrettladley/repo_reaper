@@ -6,6 +6,7 @@ use repo_reaper_core::{
     index::InvertedIndex,
     query::AnalyzedQuery,
     ranking::{BM25HyperParams, RankingAlgo},
+    regex_search::{RegexSearchEngine, TrigramIndex},
     tokenizer::n_gram_transform,
 };
 use rust_stemmers::{Algorithm, Stemmer};
@@ -14,6 +15,7 @@ use tempfile::TempDir;
 const CORPUS_SEED: u64 = 0x5eed_cafe;
 const DOC_COUNT: usize = 256;
 const TOKENS_PER_DOC: usize = 240;
+const REGEX_LITERAL: &str = "rare_literal_7";
 
 fn bench_config() -> Config {
     Config {
@@ -79,6 +81,10 @@ fn deterministic_corpus(doc_count: usize, tokens_per_doc: usize, seed: u64) -> V
             }
 
             tokens.push(format!("identifier_{}", doc_id % 17));
+            tokens.push(format!("fn module_{doc_id}_handler() {{"));
+            tokens.push(format!("let marker = \"rare_literal_{}\";", doc_id % 17));
+            tokens.push("repository_index.lookup(marker);".to_string());
+            tokens.push("}".to_string());
             tokens.join(" ")
         })
         .collect()
@@ -153,6 +159,67 @@ fn bench_ranked_search(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_search_comparison(c: &mut Criterion) {
+    let config = bench_config();
+    let corpus = corpus_fixture();
+    let ranked_index = build_index(corpus.path(), &config);
+    let regex_index = TrigramIndex::new(corpus.path());
+    let regex_engine = RegexSearchEngine::new(corpus.path());
+    let ranked_query = AnalyzedQuery::new("repository token parser update", &config);
+    let bm25 = bm25();
+
+    let mut group = c.benchmark_group("search_comparison");
+    group.bench_function("traditional_ir/bm25", |b| {
+        b.iter(|| {
+            bm25.rank(
+                black_box(&ranked_index),
+                black_box(&ranked_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("traditional_ir/cosine", |b| {
+        b.iter(|| {
+            RankingAlgo::CosineSimilarity.rank(
+                black_box(&ranked_index),
+                black_box(&ranked_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("traditional_ir/tfidf", |b| {
+        b.iter(|| {
+            RankingAlgo::TFIDF.rank(
+                black_box(&ranked_index),
+                black_box(&ranked_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("regex/full_scan_verifier", |b| {
+        b.iter(|| {
+            regex_engine
+                .search(black_box(REGEX_LITERAL))
+                .expect("regex benchmark pattern should be valid")
+        });
+    });
+    group.bench_function("regex/classic_trigram_verified_literal", |b| {
+        b.iter(|| regex_index.search_literal(black_box(REGEX_LITERAL)));
+    });
+    group.bench_function("regex/classic_trigram_candidates", |b| {
+        b.iter(|| regex_index.candidates_for_literal(black_box(REGEX_LITERAL)));
+    });
+    group.bench_function("regex/masked_trigram_candidates", |b| {
+        b.iter(|| regex_index.experimental_masked_candidates_for_literal(black_box(REGEX_LITERAL)));
+    });
+    group.bench_function("regex/sparse_ngram_candidates", |b| {
+        b.iter(|| {
+            regex_index.experimental_sparse_ngram_candidates_for_literal(black_box(REGEX_LITERAL))
+        });
+    });
+    group.finish();
+}
+
 fn bench_index_update(c: &mut Criterion) {
     let config = bench_config();
 
@@ -202,6 +269,7 @@ criterion_group!(
     bench_tokenization,
     bench_index_build,
     bench_ranked_search,
+    bench_search_comparison,
     bench_index_update
 );
 criterion_main!(benches);
