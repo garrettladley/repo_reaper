@@ -16,7 +16,7 @@ use notify::{
 use repo_reaper_core::{
     config::Config as ReaperConfig,
     index::{
-        InvertedIndex, SearchEngine,
+        FileSystemIndexCorpus, InvertedIndex, SearchEngine,
         event_log::{IndexEvent, append_event, clear_events, read_events, replay_events},
         inverted_file::InvertedFileLayout,
         snapshot::{load_snapshot, write_snapshot},
@@ -32,6 +32,7 @@ pub(crate) struct LiveSearchOptions {
     pub(crate) feedback_expansion: bool,
     pub(crate) index_dir: Option<PathBuf>,
     pub(crate) reindex: bool,
+    pub(crate) respect_gitignore: bool,
 }
 
 pub(crate) fn run(
@@ -56,11 +57,23 @@ pub(crate) fn run(
             }
             Err(error) => {
                 eprintln!("rebuilding index because snapshot could not be loaded: {error}");
-                build_index(&directory, &config, transformer.as_ref(), fielded)
+                build_index(
+                    &directory,
+                    &config,
+                    transformer.as_ref(),
+                    fielded,
+                    options.respect_gitignore,
+                )
             }
         }
     } else {
-        build_index(&directory, &config, transformer.as_ref(), fielded)
+        build_index(
+            &directory,
+            &config,
+            transformer.as_ref(),
+            fielded,
+            options.respect_gitignore,
+        )
     };
 
     let engine = SearchEngine::new(index);
@@ -99,11 +112,15 @@ fn build_index(
     config: &ReaperConfig,
     transformer: &(impl Fn(&str) -> HashMap<repo_reaper_core::index::Term, u32> + Sync),
     fielded: bool,
+    respect_gitignore: bool,
 ) -> InvertedIndex {
+    let corpus = FileSystemIndexCorpus::new(directory, None::<&PathBuf>)
+        .with_respect_gitignore(respect_gitignore);
+
     if fielded {
-        InvertedIndex::new_fielded(directory, config, None)
+        InvertedIndex::from_corpus_fielded(&corpus, config).index
     } else {
-        InvertedIndex::new(directory, transformer, None)
+        InvertedIndex::from_corpus(&corpus, transformer).index
     }
 }
 

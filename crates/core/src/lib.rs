@@ -2,6 +2,7 @@ pub mod code_intelligence;
 pub mod config;
 pub mod error;
 pub mod evaluation;
+mod fs_walk;
 pub mod index;
 pub mod query;
 pub mod ranking;
