@@ -197,20 +197,20 @@
       ]
     },
     {
-      "query": "bm25 hyperparameters load configuration bm25 yml",
-      "narrative": "Find where BM25 k1 and b are loaded from configuration.",
+      "query": "bm25 hyperparameters default k1 b",
+      "narrative": "Find where BM25 k1 and b defaults are defined.",
       "query_shape": "configuration",
       "results": [
         {
           "path": "core/src/ranking/bm25.rs",
-          "content": "get_configuration reads configuration/bm25.yml and deserializes BM25HyperParams.",
+          "content": "BM25HyperParams defines the built-in k1 and b defaults.",
           "relevant": true,
           "rank": 1,
           "evidence": [
             {
               "start_line": 13,
-              "end_line": 28,
-              "snippet": "pub struct BM25HyperParams"
+              "end_line": 21,
+              "snippet": "impl Default for BM25HyperParams"
             }
           ]
         }
