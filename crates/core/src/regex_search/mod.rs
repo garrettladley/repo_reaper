@@ -4,6 +4,7 @@ mod disk_postings;
 mod engine;
 mod planner;
 mod regex_query;
+mod sparse_ngram;
 mod trigram_index;
 mod types;
 
@@ -15,8 +16,8 @@ pub use engine::RegexSearchEngine;
 pub use regex_query::RegexCandidatePlan;
 pub use trigram_index::{TrigramIndex, trigrams};
 pub use types::{
-    LiteralSearchResult, RegexCandidateDiagnostics, RegexCandidateSelection, RegexPostingsError,
-    RegexSearchError, RegexSearchMatch, Trigram,
+    ExperimentalSparseNgramComparison, LiteralSearchResult, RegexCandidateDiagnostics,
+    RegexCandidateSelection, RegexPostingsError, RegexSearchError, RegexSearchMatch, Trigram,
 };
 
 pub(crate) fn line_range_for_match(

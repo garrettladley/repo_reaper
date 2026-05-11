@@ -52,6 +52,26 @@ pub struct LiteralSearchResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExperimentalSparseNgramComparison {
+    /// Number of documents selected by the default trigram candidate path.
+    pub classic_candidate_count: usize,
+    /// Number of documents selected by the experimental sparse n-gram path.
+    pub sparse_candidate_count: usize,
+    /// Number of default trigram posting lists read for this literal.
+    pub classic_posting_lookups: usize,
+    /// Number of sparse n-gram posting lists read by the covering query.
+    pub sparse_posting_lookups: usize,
+    /// Number of distinct classic trigram keys in the current index.
+    pub classic_index_key_count: usize,
+    /// Number of distinct sparse n-gram keys in the current experimental index.
+    pub sparse_index_key_count: usize,
+    /// Number of classic trigram tokens emitted if this literal were indexed.
+    pub classic_update_token_count: usize,
+    /// Number of sparse n-gram tokens emitted if this literal were indexed.
+    pub sparse_update_token_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexCandidateSelection {
     pub candidates: BTreeSet<DocId>,
     pub diagnostics: RegexCandidateDiagnostics,
