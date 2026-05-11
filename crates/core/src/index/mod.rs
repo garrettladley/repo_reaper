@@ -20,7 +20,7 @@ pub use engine::{SearchEngine, SearchEngineError};
 pub use event_log::IndexEvent;
 pub use field::DocumentField;
 pub use inverted_index::{
-    CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, TermDocument,
+    CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, PositionList, TermDocument,
     TermFrequencySummary,
 };
 pub use reader::{OwnedPostingList, PostingList, RankedIndexReader};

@@ -10,6 +10,7 @@ use crate::{
 pub struct AnalyzedQuery {
     original_text: String,
     terms: HashMap<Term, QueryTerm>,
+    phrases: Vec<QueryPhrase>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -18,9 +19,26 @@ pub struct QueryTerm {
     pub weight: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryPhrase {
+    pub raw: String,
+    pub terms: Vec<Term>,
+}
+
 impl AnalyzedQuery {
     pub fn new(query: &str, config: &Config) -> Self {
-        Self::from_frequencies(query.to_string(), n_gram_transform(query, config))
+        let phrase_analyzer = |phrase: &str| {
+            content_tokens_for_query(
+                AnalyzerProfile::for_file_type(FileType::UnknownText),
+                phrase,
+                config,
+            )
+        };
+        Self::from_frequencies_and_phrases(
+            query.to_string(),
+            n_gram_transform(query, config),
+            parse_quoted_phrases(query, phrase_analyzer),
+        )
     }
 
     pub fn new_code_search(query: &str, config: &Config) -> Self {
@@ -33,12 +51,26 @@ impl AnalyzedQuery {
                 acc
             });
 
-        Self::from_frequencies(query.to_string(), frequencies)
+        Self::from_frequencies_and_phrases(
+            query.to_string(),
+            frequencies,
+            parse_quoted_phrases(query, |phrase| {
+                content_tokens_for_query(profile, phrase, config)
+            }),
+        )
     }
 
     pub fn from_frequencies(
         original_text: impl Into<String>,
         frequencies: HashMap<Term, u32>,
+    ) -> Self {
+        Self::from_frequencies_and_phrases(original_text, frequencies, Vec::new())
+    }
+
+    pub fn from_frequencies_and_phrases(
+        original_text: impl Into<String>,
+        frequencies: HashMap<Term, u32>,
+        phrases: Vec<QueryPhrase>,
     ) -> Self {
         let terms = frequencies
             .into_iter()
@@ -57,6 +89,7 @@ impl AnalyzedQuery {
         Self {
             original_text: original_text.into(),
             terms,
+            phrases,
         }
     }
 
@@ -78,6 +111,7 @@ impl AnalyzedQuery {
         Self {
             original_text: original_text.into(),
             terms,
+            phrases: Vec::new(),
         }
     }
 
@@ -89,6 +123,10 @@ impl AnalyzedQuery {
         self.terms.iter()
     }
 
+    pub fn phrases(&self) -> &[QueryPhrase] {
+        &self.phrases
+    }
+
     pub fn is_empty(&self) -> bool {
         self.terms.is_empty()
     }
@@ -96,6 +134,39 @@ impl AnalyzedQuery {
     pub fn len(&self) -> usize {
         self.terms.len()
     }
+}
+
+fn parse_quoted_phrases(query: &str, analyzer: impl Fn(&str) -> Vec<String>) -> Vec<QueryPhrase> {
+    let mut phrases = Vec::new();
+    let mut remaining = query;
+
+    while let Some(start) = remaining.find('"') {
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('"') else {
+            break;
+        };
+
+        let raw = &after_start[..end];
+        let terms = analyzer(raw).into_iter().map(Term).collect::<Vec<_>>();
+        if terms.len() > 1 {
+            phrases.push(QueryPhrase {
+                raw: raw.to_string(),
+                terms,
+            });
+        }
+
+        remaining = &after_start[end + 1..];
+    }
+
+    phrases
+}
+
+fn content_tokens_for_query(
+    profile: AnalyzerProfile,
+    phrase: &str,
+    config: &Config,
+) -> Vec<String> {
+    profile.analyze(AnalyzerField::Content, phrase, config)
 }
 
 impl std::fmt::Display for AnalyzedQuery {

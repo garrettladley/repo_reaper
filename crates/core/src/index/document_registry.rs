@@ -93,6 +93,7 @@ pub trait DocumentCatalog {
     }
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
     fn get(&self, id: DocId) -> Option<&DocumentMetadata>;
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_>;
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata>;
     fn doc_id(&self, path: &Path) -> Option<DocId>;
     fn len(&self) -> usize;
@@ -186,6 +187,10 @@ impl DocumentCatalog for DocumentRegistry {
 
     fn get(&self, id: DocId) -> Option<&DocumentMetadata> {
         self.documents.get(&id)
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_> {
+        Box::new(self.documents.values())
     }
 
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata> {

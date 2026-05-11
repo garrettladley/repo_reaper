@@ -113,6 +113,7 @@ pub trait RankedIndexReader {
         Self: 'a;
 
     fn postings(&self, term: &Term) -> Option<Self::Postings<'_>>;
+    fn documents(&self) -> Vec<&DocumentMetadata>;
     fn document(&self, id: DocId) -> Option<&DocumentMetadata>;
     fn doc_id(&self, path: &Path) -> Option<DocId>;
     fn document_norm(&self, doc_id: DocId) -> Option<f64>;
@@ -120,6 +121,9 @@ pub trait RankedIndexReader {
     fn avg_doc_length(&self) -> f64;
     fn avg_field_length(&self, field: DocumentField) -> f64;
     fn doc_freq(&self, term: &Term) -> usize;
+    fn total_token_count(&self) -> u64;
+    fn vocabulary_size(&self) -> usize;
+    fn collection_frequency(&self, term: &Term) -> usize;
 }
 
 impl RankedIndexReader for InvertedIndex {
@@ -127,6 +131,10 @@ impl RankedIndexReader for InvertedIndex {
 
     fn postings(&self, term: &Term) -> Option<Self::Postings<'_>> {
         InvertedIndex::get_postings(self, term)
+    }
+
+    fn documents(&self) -> Vec<&DocumentMetadata> {
+        InvertedIndex::documents(self).collect()
     }
 
     fn document(&self, id: DocId) -> Option<&DocumentMetadata> {
@@ -155,6 +163,18 @@ impl RankedIndexReader for InvertedIndex {
 
     fn doc_freq(&self, term: &Term) -> usize {
         InvertedIndex::doc_freq(self, term)
+    }
+
+    fn total_token_count(&self) -> u64 {
+        InvertedIndex::total_token_count(self)
+    }
+
+    fn vocabulary_size(&self) -> usize {
+        InvertedIndex::vocabulary_size(self)
+    }
+
+    fn collection_frequency(&self, term: &Term) -> usize {
+        InvertedIndex::collection_frequency(self, term)
     }
 }
 

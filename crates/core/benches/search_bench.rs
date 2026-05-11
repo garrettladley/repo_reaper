@@ -5,7 +5,9 @@ use repo_reaper_core::{
     config::Config,
     index::InvertedIndex,
     query::AnalyzedQuery,
-    ranking::{BM25FHyperParams, BM25HyperParams, RankingAlgo},
+    ranking::{
+        BM25FHyperParams, BM25HyperParams, ProximityConfig, QueryLikelihoodParams, RankingAlgo,
+    },
     regex_search::{RegexSearchEngine, TrigramIndex},
     tokenizer::n_gram_transform,
 };
@@ -34,6 +36,17 @@ fn bm25() -> RankingAlgo {
 
 fn bm25f() -> RankingAlgo {
     RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())
+}
+
+fn bm25_proximity() -> RankingAlgo {
+    RankingAlgo::BM25Proximity(
+        BM25HyperParams { k1: 1.2, b: 0.75 },
+        ProximityConfig::default(),
+    )
+}
+
+fn query_likelihood() -> RankingAlgo {
+    RankingAlgo::QueryLikelihood(QueryLikelihoodParams::dirichlet_defaults())
 }
 
 fn deterministic_corpus(doc_count: usize, tokens_per_doc: usize, seed: u64) -> Vec<String> {
@@ -151,8 +164,11 @@ fn bench_ranked_search(c: &mut Criterion) {
     let index = build_index(corpus.path(), &config);
     let fielded_index = build_fielded_index(corpus.path(), &config);
     let query = AnalyzedQuery::new("repository token parser update", &config);
+    let fielded_query = AnalyzedQuery::new_code_search("repository token parser update", &config);
     let bm25 = bm25();
     let bm25f = bm25f();
+    let bm25_proximity = bm25_proximity();
+    let query_likelihood = query_likelihood();
 
     let mut group = c.benchmark_group("ranked_search");
     group.bench_function("bm25", |b| {
@@ -160,6 +176,18 @@ fn bench_ranked_search(c: &mut Criterion) {
     });
     group.bench_function("bm25f", |b| {
         b.iter(|| bm25f.rank(black_box(&fielded_index), black_box(&query), black_box(10)));
+    });
+    group.bench_function("bm25_proximity", |b| {
+        b.iter(|| {
+            bm25_proximity.rank(
+                black_box(&fielded_index),
+                black_box(&fielded_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("query_likelihood", |b| {
+        b.iter(|| query_likelihood.rank(black_box(&index), black_box(&query), black_box(10)));
     });
     group.bench_function("cosine", |b| {
         b.iter(|| {
@@ -180,8 +208,11 @@ fn bench_search_comparison(c: &mut Criterion) {
     let regex_index = TrigramIndex::new(corpus.path());
     let regex_engine = RegexSearchEngine::new(corpus.path());
     let ranked_query = AnalyzedQuery::new("repository token parser update", &config);
+    let fielded_query = AnalyzedQuery::new_code_search("repository token parser update", &config);
     let bm25 = bm25();
     let bm25f = bm25f();
+    let bm25_proximity = bm25_proximity();
+    let query_likelihood = query_likelihood();
 
     let mut group = c.benchmark_group("search_comparison");
     group.bench_function("traditional_ir/bm25", |b| {
@@ -197,6 +228,24 @@ fn bench_search_comparison(c: &mut Criterion) {
         b.iter(|| {
             bm25f.rank(
                 black_box(&fielded_index),
+                black_box(&ranked_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("traditional_ir/bm25_proximity", |b| {
+        b.iter(|| {
+            bm25_proximity.rank(
+                black_box(&fielded_index),
+                black_box(&fielded_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("traditional_ir/query_likelihood", |b| {
+        b.iter(|| {
+            query_likelihood.rank(
+                black_box(&ranked_index),
                 black_box(&ranked_query),
                 black_box(10),
             )
