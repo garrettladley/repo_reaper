@@ -2,6 +2,7 @@ pub mod corpus;
 pub mod document_registry;
 pub mod field;
 pub mod inverted_index;
+pub mod quality;
 pub mod term;
 
 pub use corpus::{
@@ -14,4 +15,5 @@ pub use inverted_index::{
     CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, TermDocument,
     TermFrequencySummary,
 };
+pub use quality::StaticQualitySignals;
 pub use term::Term;

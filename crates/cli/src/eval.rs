@@ -1,4 +1,10 @@
-use std::{fs, path::Path, process::Command as ProcessCommand};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::Write,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+};
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -11,6 +17,11 @@ use repo_reaper_core::{
         metrics::{GroundednessResult, TestQuery, TokenEfficiencyEvaluation},
     },
     index::InvertedIndex,
+    query::QueryExpansionConfig,
+    ranking::{
+        RankingAlgo,
+        features::{PairwisePreferenceRow, RankingFeatureRow},
+    },
     tokenizer::n_gram_transform,
 };
 
@@ -95,10 +106,14 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
     let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
         .context("failed to deserialize evaluation JSON data")?;
 
-    let evaluation_data = EvaluationData::parse_with_code_search(
+    let evaluation_data = EvaluationData::parse_with_options(
         raw_evaluation_data,
         config,
         args.ranking_algorithm.needs_fielded_index(),
+        QueryExpansionConfig {
+            controlled: args.query_expansion,
+            feedback: args.feedback_expansion,
+        },
     )
     .context("failed to parse evaluation data")?;
 
@@ -184,8 +199,19 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
     let evaluation_report = TestSet {
         ranking_algorithm: args.ranking_algorithm.clone(),
         queries,
+        feedback_expansion: args.feedback_expansion,
     }
     .evaluate_report(&inverted_index, args.top_n);
+
+    if let Some(path) = &args.export_features {
+        write_feature_export(
+            path,
+            &inverted_index,
+            &args.ranking_algorithm,
+            &evaluation_data,
+            args.top_n,
+        )?;
+    }
 
     if let Some(baseline_path) = &args.eval_compare {
         let baseline = read_evaluation_baseline(baseline_path)?;
@@ -285,6 +311,62 @@ fn read_evaluation_baseline(path: &Path) -> Result<EvaluationReport> {
             token_efficiency: TokenEfficiencyEvaluation::default(),
         },
     })
+}
+
+#[derive(serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum FeatureExportRecord {
+    Feature(RankingFeatureRow),
+    PairwisePreference(PairwisePreferenceRow),
+}
+
+fn write_feature_export(
+    path: &Path,
+    inverted_index: &InvertedIndex,
+    ranking_algorithm: &RankingAlgo,
+    evaluation_data: &EvaluationData,
+    top_n: usize,
+) -> Result<()> {
+    let mut file = File::create(path)
+        .with_context(|| format!("failed to create feature export at {}", path.display()))?;
+
+    for (index, example) in evaluation_data.examples.iter().enumerate() {
+        let query_id = format!("q{}", index + 1);
+        let relevance = example
+            .results
+            .iter()
+            .filter_map(|result| match &result.relevance {
+                Relevance::Relevant(rank) => Some((result.path.clone(), *rank)),
+                Relevance::NonRelevant => None,
+            })
+            .collect::<BTreeMap<PathBuf, usize>>();
+
+        for row in repo_reaper_core::ranking::features::export_feature_rows(
+            inverted_index,
+            ranking_algorithm,
+            &query_id,
+            &example.query,
+            top_n,
+            &relevance,
+        ) {
+            write_jsonl(&mut file, &FeatureExportRecord::Feature(row))?;
+        }
+
+        for row in
+            repo_reaper_core::ranking::features::export_pairwise_preferences(&query_id, &relevance)
+        {
+            write_jsonl(&mut file, &FeatureExportRecord::PairwisePreference(row))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn write_jsonl(file: &mut File, record: &FeatureExportRecord) -> Result<()> {
+    serde_json::to_writer(&mut *file, record).context("failed to serialize feature record")?;
+    file.write_all(b"\n")
+        .context("failed to write feature record")?;
+    Ok(())
 }
 
 fn compare_evaluation_reports(

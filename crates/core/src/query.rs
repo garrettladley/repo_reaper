@@ -9,6 +9,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct AnalyzedQuery {
     original_text: String,
+    intent: QueryIntent,
     terms: HashMap<Term, QueryTerm>,
 }
 
@@ -16,14 +17,51 @@ pub struct AnalyzedQuery {
 pub struct QueryTerm {
     pub frequency: u32,
     pub weight: f64,
+    pub provenance: QueryTermProvenance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryIntent {
+    Path,
+    Identifier,
+    NaturalLanguage,
+    ErrorMessage,
+    Config,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryTermProvenance {
+    Original,
+    ControlledExpansion,
+    Feedback,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct QueryExpansionConfig {
+    pub controlled: bool,
+    pub feedback: bool,
 }
 
 impl AnalyzedQuery {
     pub fn new(query: &str, config: &Config) -> Self {
-        Self::from_frequencies(query.to_string(), n_gram_transform(query, config))
+        Self::from_frequencies_with_intent(
+            query.to_string(),
+            classify_query_intent(query),
+            n_gram_transform(query, config),
+        )
     }
 
     pub fn new_code_search(query: &str, config: &Config) -> Self {
+        Self::new_code_search_with_expansion(query, config, QueryExpansionConfig::default())
+    }
+
+    pub fn new_code_search_with_expansion(
+        query: &str,
+        config: &Config,
+        expansion: QueryExpansionConfig,
+    ) -> Self {
+        let intent = classify_query_intent(query);
         let profile = AnalyzerProfile::for_file_type(FileType::Rust);
         let frequencies = profile
             .analyze(AnalyzerField::Content, query, config)
@@ -33,11 +71,30 @@ impl AnalyzedQuery {
                 acc
             });
 
-        Self::from_frequencies(query.to_string(), frequencies)
+        let mut query = Self::from_frequencies_with_intent(query.to_string(), intent, frequencies);
+        if expansion.controlled && query.intent.allows_controlled_expansion() {
+            let additions = controlled_expansions(query.terms.keys().map(|term| term.0.as_str()));
+            query.add_weighted_terms(additions, QueryTermProvenance::ControlledExpansion);
+        }
+
+        query
     }
 
     pub fn from_frequencies(
         original_text: impl Into<String>,
+        frequencies: HashMap<Term, u32>,
+    ) -> Self {
+        let original_text = original_text.into();
+        Self::from_frequencies_with_intent(
+            original_text.clone(),
+            classify_query_intent(&original_text),
+            frequencies,
+        )
+    }
+
+    pub fn from_frequencies_with_intent(
+        original_text: impl Into<String>,
+        intent: QueryIntent,
         frequencies: HashMap<Term, u32>,
     ) -> Self {
         let terms = frequencies
@@ -49,6 +106,7 @@ impl AnalyzedQuery {
                     QueryTerm {
                         frequency,
                         weight: frequency as f64,
+                        provenance: QueryTermProvenance::Original,
                     },
                 )
             })
@@ -56,11 +114,25 @@ impl AnalyzedQuery {
 
         Self {
             original_text: original_text.into(),
+            intent,
             terms,
         }
     }
 
     pub fn from_weights(original_text: impl Into<String>, weights: HashMap<Term, f64>) -> Self {
+        let original_text = original_text.into();
+        Self::from_weights_with_intent(
+            original_text.clone(),
+            classify_query_intent(&original_text),
+            weights,
+        )
+    }
+
+    pub fn from_weights_with_intent(
+        original_text: impl Into<String>,
+        intent: QueryIntent,
+        weights: HashMap<Term, f64>,
+    ) -> Self {
         let terms = weights
             .into_iter()
             .filter(|(_, weight)| *weight > 0.0)
@@ -70,6 +142,7 @@ impl AnalyzedQuery {
                     QueryTerm {
                         frequency: 1,
                         weight,
+                        provenance: QueryTermProvenance::Original,
                     },
                 )
             })
@@ -77,6 +150,7 @@ impl AnalyzedQuery {
 
         Self {
             original_text: original_text.into(),
+            intent,
             terms,
         }
     }
@@ -85,8 +159,16 @@ impl AnalyzedQuery {
         &self.original_text
     }
 
+    pub fn intent(&self) -> QueryIntent {
+        self.intent
+    }
+
     pub fn terms(&self) -> impl Iterator<Item = (&Term, &QueryTerm)> {
         self.terms.iter()
+    }
+
+    pub fn add_feedback_terms(&mut self, weights: HashMap<Term, f64>) {
+        self.add_weighted_terms(weights, QueryTermProvenance::Feedback);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -96,6 +178,134 @@ impl AnalyzedQuery {
     pub fn len(&self) -> usize {
         self.terms.len()
     }
+
+    fn add_weighted_terms(&mut self, weights: HashMap<Term, f64>, provenance: QueryTermProvenance) {
+        for (term, weight) in weights {
+            if weight <= 0.0 {
+                continue;
+            }
+
+            self.terms
+                .entry(term)
+                .and_modify(|existing| existing.weight += weight)
+                .or_insert(QueryTerm {
+                    frequency: 1,
+                    weight,
+                    provenance,
+                });
+        }
+    }
+}
+
+impl QueryIntent {
+    pub fn allows_controlled_expansion(self) -> bool {
+        matches!(
+            self,
+            Self::NaturalLanguage | Self::ErrorMessage | Self::Config
+        )
+    }
+}
+
+impl QueryTermProvenance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Original => "original",
+            Self::ControlledExpansion => "controlled_expansion",
+            Self::Feedback => "feedback",
+        }
+    }
+}
+
+pub fn classify_query_intent(query: &str) -> QueryIntent {
+    let trimmed = query.trim();
+    let lower = trimmed.to_ascii_lowercase();
+
+    if looks_config_like(trimmed, &lower) {
+        return QueryIntent::Config;
+    }
+    if looks_path_like(trimmed, &lower) {
+        return QueryIntent::Path;
+    }
+    if looks_error_like(trimmed, &lower) {
+        return QueryIntent::ErrorMessage;
+    }
+    if looks_identifier_like(trimmed) {
+        return QueryIntent::Identifier;
+    }
+
+    QueryIntent::NaturalLanguage
+}
+
+fn looks_path_like(query: &str, lower: &str) -> bool {
+    query.contains('/')
+        || query.contains('\\')
+        || lower.starts_with("./")
+        || lower.starts_with("../")
+        || lower.ends_with(".rs")
+        || lower.ends_with(".toml")
+        || lower.ends_with(".json")
+        || lower.ends_with(".yaml")
+        || lower.ends_with(".yml")
+}
+
+fn looks_identifier_like(query: &str) -> bool {
+    !query.contains(char::is_whitespace)
+        && query.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+        && query
+            .chars()
+            .any(|character| character == '_' || character == '-' || character.is_ascii_uppercase())
+}
+
+fn looks_error_like(query: &str, lower: &str) -> bool {
+    query.contains('"')
+        || lower.contains("error:")
+        || lower.contains("panic")
+        || lower.contains("failed to")
+        || lower.contains("exception")
+        || lower.contains("not found")
+        || query.split_whitespace().count() >= 6
+            && query
+                .chars()
+                .any(|character| matches!(character, ':' | '\'' | '`' | '(' | ')'))
+}
+
+fn looks_config_like(query: &str, lower: &str) -> bool {
+    lower.contains("cargo.toml")
+        || lower.contains("package.json")
+        || lower.contains("config")
+        || lower.contains("configuration")
+        || lower.contains("setting")
+        || lower.contains("env")
+        || query.contains('=')
+        || query.contains(':') && !query.contains(char::is_whitespace)
+}
+
+fn controlled_expansions<'a>(terms: impl Iterator<Item = &'a str>) -> HashMap<Term, f64> {
+    let mut expansions = HashMap::new();
+
+    for term in terms {
+        for expansion in expansions_for(term) {
+            expansions.insert(Term(expansion.to_string()), 0.35);
+        }
+    }
+
+    expansions
+}
+
+fn expansions_for(term: &str) -> &'static [&'static str] {
+    match term {
+        "db" => &["database"],
+        "auth" => &["authentication", "authorization"],
+        "cfg" | "config" => &["configuration"],
+        "repo" => &["repository"],
+        "err" => &["error"],
+        "msg" => &["message"],
+        "req" => &["request"],
+        "res" => &["response", "result"],
+        _ => &[],
+    }
 }
 
 impl std::fmt::Display for AnalyzedQuery {
@@ -104,5 +314,92 @@ impl std::fmt::Display for AnalyzedQuery {
         terms.sort_unstable();
 
         write!(f, "{}", terms.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+    use rust_stemmers::{Algorithm, Stemmer};
+
+    use super::{AnalyzedQuery, QueryExpansionConfig, QueryIntent, classify_query_intent};
+    use crate::{config::Config, index::Term};
+
+    fn test_config() -> Config {
+        Config {
+            n_grams: 1,
+            stemmer: Stemmer::create(Algorithm::English),
+            stop_words: stop_words::get(stop_words::LANGUAGE::English)
+                .par_iter()
+                .map(|word| word.to_string())
+                .collect::<HashSet<String>>(),
+        }
+    }
+
+    #[test]
+    fn classifies_query_intents() {
+        assert_eq!(
+            classify_query_intent("src/ranking/bm25.rs"),
+            QueryIntent::Path
+        );
+        assert_eq!(
+            classify_query_intent("BM25HyperParams"),
+            QueryIntent::Identifier
+        );
+        assert_eq!(
+            classify_query_intent("failed to deserialize evaluation JSON data"),
+            QueryIntent::ErrorMessage
+        );
+        assert_eq!(
+            classify_query_intent("cargo.toml dependencies"),
+            QueryIntent::Config
+        );
+        assert_eq!(
+            classify_query_intent("how bm25 scoring works"),
+            QueryIntent::NaturalLanguage
+        );
+    }
+
+    #[test]
+    fn controlled_expansion_is_downweighted_and_gated_by_intent() {
+        let config = test_config();
+        let expanded = AnalyzedQuery::new_code_search_with_expansion(
+            "auth config",
+            &config,
+            QueryExpansionConfig {
+                controlled: true,
+                feedback: false,
+            },
+        );
+        let auth_weight = expanded
+            .terms()
+            .find(|(term, _)| **term == Term("auth".to_string()))
+            .unwrap()
+            .1
+            .weight;
+        let authentication_weight = expanded
+            .terms()
+            .find(|(term, _)| **term == Term("authentication".to_string()))
+            .unwrap()
+            .1
+            .weight;
+
+        assert!(authentication_weight < auth_weight);
+
+        let path_query = AnalyzedQuery::new_code_search_with_expansion(
+            "src/auth.rs",
+            &config,
+            QueryExpansionConfig {
+                controlled: true,
+                feedback: false,
+            },
+        );
+        assert!(
+            path_query
+                .terms()
+                .all(|(term, _)| term.0 != "authentication")
+        );
     }
 }

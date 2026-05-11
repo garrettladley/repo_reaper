@@ -14,8 +14,11 @@ use notify::{
     event::{ModifyKind, RemoveKind},
 };
 use repo_reaper_core::{
-    config::Config as ReaperConfig, index::InvertedIndex, query::AnalyzedQuery,
-    ranking::RankingAlgo, tokenizer::n_gram_transform,
+    config::Config as ReaperConfig,
+    index::InvertedIndex,
+    query::{AnalyzedQuery, QueryExpansionConfig},
+    ranking::RankingAlgo,
+    tokenizer::n_gram_transform,
 };
 
 pub(crate) fn run(
@@ -23,6 +26,8 @@ pub(crate) fn run(
     config: Arc<ReaperConfig>,
     algo: RankingAlgo,
     top_n: usize,
+    query_expansion: bool,
+    feedback_expansion: bool,
 ) -> Result<()> {
     let config_clone = Arc::clone(&config);
     let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
@@ -58,7 +63,14 @@ pub(crate) fn run(
         Arc::clone(&config),
         algo.needs_fielded_index(),
     );
-    run_repl(config, algo, top_n, inverted_index)
+    run_repl(
+        config,
+        algo,
+        top_n,
+        inverted_index,
+        query_expansion,
+        feedback_expansion,
+    )
 }
 
 fn spawn_watcher(
@@ -136,6 +148,8 @@ fn run_repl(
     algo: RankingAlgo,
     top_n: usize,
     inverted_index: Arc<Mutex<InvertedIndex>>,
+    query_expansion: bool,
+    feedback_expansion: bool,
 ) -> Result<()> {
     loop {
         println!("Enter a query: ");
@@ -150,7 +164,14 @@ fn run_repl(
         }
 
         let query = if algo.needs_fielded_index() {
-            AnalyzedQuery::new_code_search(&query, &config)
+            AnalyzedQuery::new_code_search_with_expansion(
+                &query,
+                &config,
+                QueryExpansionConfig {
+                    controlled: query_expansion,
+                    feedback: feedback_expansion,
+                },
+            )
         } else {
             AnalyzedQuery::new(&query, &config)
         };
@@ -159,7 +180,11 @@ fn run_repl(
             let index = inverted_index
                 .lock()
                 .map_err(|_| anyhow!("index lock poisoned"))?;
-            algo.rank(&index, &query, top_n)
+            if feedback_expansion {
+                algo.rank_with_feedback(&index, &query, top_n, top_n.min(3), 6)
+            } else {
+                algo.rank(&index, &query, top_n)
+            }
         };
 
         log_query(&query, &ranking, &algo, top_n)?;

@@ -10,6 +10,7 @@ use crate::{
 pub struct TestSet {
     pub ranking_algorithm: RankingAlgo,
     pub queries: Vec<TestQuery>,
+    pub feedback_expansion: bool,
 }
 
 pub struct TestQuery {

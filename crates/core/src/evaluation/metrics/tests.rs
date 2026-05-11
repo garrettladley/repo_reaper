@@ -403,6 +403,7 @@ fn evaluate_report_includes_query_metrics_and_evidence_boundary() {
     let test_set = TestSet {
         ranking_algorithm: RankingAlgo::TFIDF,
         queries,
+        feedback_expansion: false,
     };
     let temp = tempfile::tempdir().unwrap();
     let index =
