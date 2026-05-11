@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-
 use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{DocId, InvertedIndex, Term, TermDocument},
+    index::{DocId, PostingList, RankedIndexReader, Term},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -12,16 +10,19 @@ use crate::{
 pub struct TFIDF;
 
 impl Scorer for TFIDF {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         _: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    ) {
-        let num_docs = inverted_index.num_docs();
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync,
+    {
+        let num_docs = index.num_docs();
 
         documents
             .iter()
@@ -30,7 +31,7 @@ impl Scorer for TFIDF {
                 let tf = term_doc.term_freq as f64 / term_doc.length as f64;
                 let idf = idf(num_docs, documents.len());
 
-                *scores.entry(*doc_id).or_insert(0.0) += query_term.weight * tf * idf;
+                *scores.entry(doc_id).or_insert(0.0) += query_term.weight * tf * idf;
             });
     }
 }

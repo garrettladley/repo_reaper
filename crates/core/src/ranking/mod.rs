@@ -4,6 +4,8 @@ pub mod cosine_similarity;
 pub mod explanation;
 pub mod features;
 pub mod feedback;
+pub mod proximity;
+pub mod query_likelihood;
 pub mod scorer;
 pub mod tf_idf;
 mod utils;
@@ -15,6 +17,8 @@ pub use explanation::{
     FieldContribution, ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations,
     StaticQualityContribution, TermExplanation,
 };
+pub use proximity::ProximityConfig;
+pub use query_likelihood::{QueryLikelihood, QueryLikelihoodParams, QueryLikelihoodSmoothing};
 pub use scorer::{RankingAlgo, RankingAlgorithm, Score, Scored, Scorer};
 pub use tf_idf::TFIDF;
 pub(crate) use utils::idf;

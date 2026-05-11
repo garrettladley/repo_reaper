@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use dashmap::DashMap;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     error::RankingError,
-    index::{DocId, InvertedIndex, Term, TermDocument},
+    index::{DocId, PostingList, RankedIndexReader, Term},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -32,27 +30,33 @@ pub struct BM25 {
 }
 
 impl Scorer for BM25 {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         _: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    ) {
-        let avgdl = inverted_index.avg_doc_length();
-        let num_docs = inverted_index.num_docs();
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync,
+    {
+        let avgdl = index.avg_doc_length();
+        let num_docs = index.num_docs();
 
         let idf = idf(num_docs, documents.len());
 
-        documents.par_iter().for_each(|(doc_id, term_doc)| {
-            let tf = term_doc.term_freq as f64;
-            let doc_length = term_doc.length as f64;
-            let score = self.score_term(query_term.weight, idf, tf, doc_length, avgdl);
+        documents
+            .iter()
+            .par_bridge()
+            .for_each(|(doc_id, term_doc)| {
+                let tf = term_doc.term_freq as f64;
+                let doc_length = term_doc.length as f64;
+                let score = self.score_term(query_term.weight, idf, tf, doc_length, avgdl);
 
-            *scores.entry(*doc_id).or_insert(0.0) += score;
-        });
+                *scores.entry(doc_id).or_insert(0.0) += score;
+            });
     }
 }
 

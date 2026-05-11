@@ -11,6 +11,7 @@ pub struct AnalyzedQuery {
     original_text: String,
     intent: QueryIntent,
     terms: HashMap<Term, QueryTerm>,
+    phrases: Vec<QueryPhrase>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -43,12 +44,22 @@ pub struct QueryExpansionConfig {
     pub feedback: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueryPhrase {
+    pub raw: String,
+    pub terms: Vec<Term>,
+}
+
 impl AnalyzedQuery {
     pub fn new(query: &str, config: &Config) -> Self {
-        Self::from_frequencies_with_intent(
+        let profile = AnalyzerProfile::for_file_type(FileType::UnknownText);
+        Self::from_frequencies_and_phrases_with_intent(
             query.to_string(),
             classify_query_intent(query),
             n_gram_transform(query, config),
+            parse_quoted_phrases(query, |phrase| {
+                content_tokens_for_query(profile, phrase, config)
+            }),
         )
     }
 
@@ -71,7 +82,14 @@ impl AnalyzedQuery {
                 acc
             });
 
-        let mut query = Self::from_frequencies_with_intent(query.to_string(), intent, frequencies);
+        let mut query = Self::from_frequencies_and_phrases_with_intent(
+            query.to_string(),
+            intent,
+            frequencies,
+            parse_quoted_phrases(query, |phrase| {
+                content_tokens_for_query(profile, phrase, config)
+            }),
+        );
         if expansion.controlled && query.intent.allows_controlled_expansion() {
             let additions = controlled_expansions(query.terms.keys().map(|term| term.0.as_str()));
             query.add_weighted_terms(additions, QueryTermProvenance::ControlledExpansion);
@@ -85,17 +103,33 @@ impl AnalyzedQuery {
         frequencies: HashMap<Term, u32>,
     ) -> Self {
         let original_text = original_text.into();
-        Self::from_frequencies_with_intent(
+        Self::from_frequencies_and_phrases_with_intent(
             original_text.clone(),
             classify_query_intent(&original_text),
             frequencies,
+            Vec::new(),
         )
     }
 
-    pub fn from_frequencies_with_intent(
+    pub fn from_frequencies_and_phrases(
+        original_text: impl Into<String>,
+        frequencies: HashMap<Term, u32>,
+        phrases: Vec<QueryPhrase>,
+    ) -> Self {
+        let original_text = original_text.into();
+        Self::from_frequencies_and_phrases_with_intent(
+            original_text.clone(),
+            classify_query_intent(&original_text),
+            frequencies,
+            phrases,
+        )
+    }
+
+    pub fn from_frequencies_and_phrases_with_intent(
         original_text: impl Into<String>,
         intent: QueryIntent,
         frequencies: HashMap<Term, u32>,
+        phrases: Vec<QueryPhrase>,
     ) -> Self {
         let terms = frequencies
             .into_iter()
@@ -116,6 +150,7 @@ impl AnalyzedQuery {
             original_text: original_text.into(),
             intent,
             terms,
+            phrases,
         }
     }
 
@@ -152,6 +187,7 @@ impl AnalyzedQuery {
             original_text: original_text.into(),
             intent,
             terms,
+            phrases: Vec::new(),
         }
     }
 
@@ -165,6 +201,10 @@ impl AnalyzedQuery {
 
     pub fn terms(&self) -> impl Iterator<Item = (&Term, &QueryTerm)> {
         self.terms.iter()
+    }
+
+    pub fn phrases(&self) -> &[QueryPhrase] {
+        &self.phrases
     }
 
     pub fn add_feedback_terms(&mut self, weights: HashMap<Term, f64>) {
@@ -308,9 +348,46 @@ fn expansions_for(term: &str) -> &'static [&'static str] {
     }
 }
 
+fn parse_quoted_phrases(query: &str, analyzer: impl Fn(&str) -> Vec<String>) -> Vec<QueryPhrase> {
+    let mut phrases = Vec::new();
+    let mut remaining = query;
+
+    while let Some(start) = remaining.find('"') {
+        let after_start = &remaining[start + 1..];
+        let Some(end) = after_start.find('"') else {
+            break;
+        };
+
+        let raw = &after_start[..end];
+        let terms = analyzer(raw).into_iter().map(Term).collect::<Vec<_>>();
+        if terms.len() > 1 {
+            phrases.push(QueryPhrase {
+                raw: raw.to_string(),
+                terms,
+            });
+        }
+
+        remaining = &after_start[end + 1..];
+    }
+
+    phrases
+}
+
+fn content_tokens_for_query(
+    profile: AnalyzerProfile,
+    phrase: &str,
+    config: &Config,
+) -> Vec<String> {
+    profile.analyze(AnalyzerField::Content, phrase, config)
+}
+
 impl std::fmt::Display for AnalyzedQuery {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut terms: Vec<&str> = self.terms.keys().map(|term| term.0.as_str()).collect();
+        let mut terms = self
+            .terms
+            .keys()
+            .map(|term| term.0.as_str())
+            .collect::<Vec<_>>();
         terms.sort_unstable();
 
         write!(f, "{}", terms.join(" "))
@@ -401,5 +478,13 @@ mod tests {
                 .terms()
                 .all(|(term, _)| term.0 != "authentication")
         );
+    }
+
+    #[test]
+    fn quoted_phrases_are_preserved_for_proximity_scoring() {
+        let query = AnalyzedQuery::new_code_search("\"ranked search\" bm25", &test_config());
+
+        assert_eq!(query.phrases()[0].raw, "ranked search");
+        assert_eq!(query.phrases()[0].terms.len(), 2);
     }
 }

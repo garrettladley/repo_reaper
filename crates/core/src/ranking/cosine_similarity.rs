@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-
 use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{DocId, InvertedIndex, Term, TermDocument},
+    index::{DocId, PostingList, RankedIndexReader, Term},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
@@ -12,22 +10,25 @@ use crate::{
 pub struct CosineSimilarity;
 
 impl Scorer for CosineSimilarity {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         query: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    ) {
-        let num_docs = inverted_index.num_docs();
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync,
+    {
+        let num_docs = index.num_docs();
 
         let query_magnitude = query
             .terms()
             .par_bridge()
             .map(|(term, query_term)| {
-                let idf = idf(num_docs, inverted_index.doc_freq(term));
+                let idf = idf(num_docs, index.doc_freq(term));
                 let weight = query_term.weight * idf;
                 weight * weight
             })
@@ -43,7 +44,7 @@ impl Scorer for CosineSimilarity {
                 let tf = term_doc.term_freq as f64;
                 let dot_product = query_term.weight * tf * term_idf * term_idf;
 
-                let Some(doc_magnitude) = inverted_index.document_norm(*doc_id) else {
+                let Some(doc_magnitude) = index.document_norm(doc_id) else {
                     return;
                 };
 
@@ -53,7 +54,7 @@ impl Scorer for CosineSimilarity {
 
                 let cosine_similarity = dot_product / (query_magnitude * doc_magnitude);
 
-                *scores.entry(*doc_id).or_insert(0.0) += cosine_similarity;
+                *scores.entry(doc_id).or_insert(0.0) += cosine_similarity;
             });
     }
 }

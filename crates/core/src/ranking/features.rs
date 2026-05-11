@@ -6,7 +6,7 @@ use std::{
 
 use crate::{
     evaluation::dataset::{EvaluationData, Relevance},
-    index::{DocumentField, InvertedIndex, Term},
+    index::{DocumentField, PostingList, RankedIndexReader},
     query::{AnalyzedQuery, QueryTermProvenance},
     ranking::{RankingAlgo, Score},
 };
@@ -120,15 +120,16 @@ where
     }
 }
 
-pub fn export_evaluation_features_to_sink<S>(
+pub fn export_evaluation_features_to_sink<S, I>(
     sink: &mut S,
-    index: &InvertedIndex,
+    index: &I,
     ranking_algorithm: &RankingAlgo,
     evaluation_data: &EvaluationData,
     top_n: usize,
 ) -> Result<(), S::Error>
 where
     S: FeatureRecordSink,
+    I: RankedIndexReader + Sync,
 {
     for (query_index, example) in evaluation_data.examples.iter().enumerate() {
         let query_id = format!("q{}", query_index + 1);
@@ -160,14 +161,17 @@ where
     Ok(())
 }
 
-pub fn export_feature_rows(
-    index: &InvertedIndex,
+pub fn export_feature_rows<I>(
+    index: &I,
     ranking_algorithm: &RankingAlgo,
     query_id: &str,
     query: &AnalyzedQuery,
     top_n: usize,
     relevance: &BTreeMap<PathBuf, usize>,
-) -> Vec<RankingFeatureRow> {
+) -> Vec<RankingFeatureRow>
+where
+    I: RankedIndexReader + Sync,
+{
     let ranked = ranking_algorithm
         .rank(index, query, top_n)
         .map(|scores| scores.0)
@@ -213,11 +217,10 @@ pub fn export_pairwise_preferences(
     rows
 }
 
-fn features_for_score(
-    index: &InvertedIndex,
-    query: &AnalyzedQuery,
-    score: &Score,
-) -> BTreeMap<String, f64> {
+fn features_for_score<I>(index: &I, query: &AnalyzedQuery, score: &Score) -> BTreeMap<String, f64>
+where
+    I: RankedIndexReader + Sync,
+{
     let mut features = BTreeMap::from([("ranking_score".to_string(), score.score)]);
     let Some(doc_id) = index.doc_id(&score.doc_path) else {
         return features;
@@ -234,10 +237,10 @@ fn features_for_score(
         let count = query
             .terms()
             .filter_map(|(term, _)| {
-                index
-                    .get_postings(term)
-                    .and_then(|docs| docs.get(&doc_id))
-                    .map(|term_doc| term_doc.field_term_freq(field))
+                index.postings(term).and_then(|docs| {
+                    docs.get(doc_id)
+                        .map(|term_doc| term_doc.field_term_freq(field))
+                })
             })
             .sum::<usize>();
         features.insert(format!("field_match.{}", field.as_str()), count as f64);
@@ -293,11 +296,6 @@ fn expansion_provenance(query: &AnalyzedQuery) -> BTreeMap<String, String> {
         .filter(|(_, query_term)| query_term.provenance != QueryTermProvenance::Original)
         .map(|(term, query_term)| (term.0.clone(), query_term.provenance.as_str().to_string()))
         .collect()
-}
-
-#[allow(dead_code)]
-fn _term_key(term: &Term) -> &str {
-    &term.0
 }
 
 #[cfg(test)]

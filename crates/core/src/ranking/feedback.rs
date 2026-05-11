@@ -1,10 +1,20 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    index::{DocId, DocumentField, InvertedIndex, Term},
+    index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
     query::AnalyzedQuery,
     ranking::Score,
 };
+
+pub trait FeedbackTermSource: RankedIndexReader {
+    fn feedback_terms(&self) -> Vec<&Term>;
+}
+
+impl FeedbackTermSource for crate::index::InvertedIndex {
+    fn feedback_terms(&self) -> Vec<&Term> {
+        self.postings_iter().map(|(term, _)| term).collect()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedbackTerm {
@@ -14,12 +24,15 @@ pub struct FeedbackTerm {
     pub source_fields: Vec<DocumentField>,
 }
 
-pub fn expand_query_with_feedback(
-    index: &InvertedIndex,
+pub fn expand_query_with_feedback<I>(
+    index: &I,
     query: &AnalyzedQuery,
     seed_results: &[Score],
     max_terms: usize,
-) -> AnalyzedQuery {
+) -> AnalyzedQuery
+where
+    I: FeedbackTermSource + Sync,
+{
     let mut feedback_terms = collect_feedback_terms(index, query, seed_results, max_terms);
     feedback_terms.sort_by(|left, right| {
         right
@@ -39,12 +52,15 @@ pub fn expand_query_with_feedback(
     expanded
 }
 
-pub fn collect_feedback_terms(
-    index: &InvertedIndex,
+pub fn collect_feedback_terms<I>(
+    index: &I,
     query: &AnalyzedQuery,
     seed_results: &[Score],
     max_terms: usize,
-) -> Vec<FeedbackTerm> {
+) -> Vec<FeedbackTerm>
+where
+    I: FeedbackTermSource + Sync,
+{
     let original_terms = query
         .terms()
         .map(|(term, _)| term.0.clone())
@@ -55,13 +71,16 @@ pub fn collect_feedback_terms(
         .collect::<Vec<_>>();
     let mut candidates: HashMap<Term, FeedbackAccumulator> = HashMap::new();
 
-    for (term, documents) in index.postings_iter() {
+    for term in index.feedback_terms() {
         if original_terms.contains(&term.0) {
             continue;
         }
+        let Some(documents) = index.postings(term) else {
+            continue;
+        };
 
         for doc_id in &seed_doc_ids {
-            let Some(term_doc) = documents.get(doc_id) else {
+            let Some(term_doc) = documents.get(*doc_id) else {
                 continue;
             };
             let field_weight = high_signal_field_weight(term_doc);
@@ -114,7 +133,7 @@ struct FeedbackAccumulator {
     source_fields: HashSet<DocumentField>,
 }
 
-fn high_signal_field_weight(term_doc: &crate::index::TermDocument) -> f64 {
+fn high_signal_field_weight(term_doc: &TermDocument) -> f64 {
     DocumentField::ALL
         .into_iter()
         .map(|field| high_signal_field(field) * term_doc.field_term_freq(field) as f64)

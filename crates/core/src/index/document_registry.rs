@@ -8,7 +8,9 @@ use crate::{
     tokenizer::FileType,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DocId(u32);
 
 impl DocId {
@@ -21,7 +23,7 @@ impl DocId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocumentMetadata {
     pub id: DocId,
     pub path: PathBuf,
@@ -29,6 +31,7 @@ pub struct DocumentMetadata {
     pub file_size_bytes: u64,
     pub file_type: FileType,
     pub field_lengths: HashMap<DocumentField, usize>,
+    #[serde(default)]
     pub quality_signals: StaticQualitySignals,
 }
 
@@ -71,7 +74,7 @@ impl DocumentMetadata {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DocumentRegistry {
     documents: HashMap<DocId, DocumentMetadata>,
     path_to_id: HashMap<PathBuf, DocId>,
@@ -100,6 +103,7 @@ pub trait DocumentCatalog {
     }
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
     fn get(&self, id: DocId) -> Option<&DocumentMetadata>;
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_>;
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata>;
     fn doc_id(&self, path: &Path) -> Option<DocId>;
     fn len(&self) -> usize;
@@ -112,6 +116,10 @@ pub trait DocumentCatalog {
 impl DocumentRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn documents_iter(&self) -> impl Iterator<Item = (&DocId, &DocumentMetadata)> {
+        self.documents.iter()
     }
 }
 
@@ -192,6 +200,10 @@ impl DocumentCatalog for DocumentRegistry {
 
     fn get(&self, id: DocId) -> Option<&DocumentMetadata> {
         self.documents.get(&id)
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_> {
+        Box::new(self.documents.values())
     }
 
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata> {

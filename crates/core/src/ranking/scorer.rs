@@ -1,15 +1,16 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr};
 
 use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
+    index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{
         BM25, BM25F, BM25FHyperParams, BM25HyperParams, CosineSimilarity, FieldContribution,
-        ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations, StaticQualityContribution,
-        TFIDF, TermExplanation, get_configuration, idf,
+        ProximityConfig, QueryLikelihood, QueryLikelihoodParams, ScoreExplanation,
+        ScoreWithExplanation, ScoredWithExplanations, StaticQualityContribution, TFIDF,
+        TermExplanation, get_configuration, idf,
     },
 };
 
@@ -45,57 +46,88 @@ pub enum RankingAlgo {
     CosineSimilarity,
     BM25(BM25HyperParams),
     BM25F(BM25FHyperParams),
+    BM25Proximity(BM25HyperParams, ProximityConfig),
+    QueryLikelihood(QueryLikelihoodParams),
     TFIDF,
 }
 
 pub trait RankingAlgorithm {
-    fn score(&self, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored;
+    fn score<I>(&self, index: &I, query: &AnalyzedQuery) -> Scored
+    where
+        I: RankedIndexReader + Sync;
 }
 
 pub trait Scorer: Send + Sync {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         query: &AnalyzedQuery,
         term: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    );
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync;
 }
 
 impl RankingAlgorithm for RankingAlgo {
-    fn score(&self, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored {
+    fn score<I>(&self, index: &I, query: &AnalyzedQuery) -> Scored
+    where
+        I: RankedIndexReader + Sync,
+    {
         match self {
-            RankingAlgo::CosineSimilarity => score_with(CosineSimilarity, inverted_index, query),
+            RankingAlgo::CosineSimilarity => score_with(CosineSimilarity, index, query),
             RankingAlgo::BM25(hyper_params) => score_with(
                 BM25 {
                     hyper_params: hyper_params.clone(),
                 },
-                inverted_index,
+                index,
                 query,
             ),
             RankingAlgo::BM25F(hyper_params) => score_with(
                 BM25F {
                     hyper_params: hyper_params.clone(),
                 },
-                inverted_index,
+                index,
                 query,
             ),
-            RankingAlgo::TFIDF => score_with(TFIDF, inverted_index, query),
+            RankingAlgo::BM25Proximity(hyper_params, config) => {
+                let mut scored = score_with(
+                    BM25 {
+                        hyper_params: hyper_params.clone(),
+                    },
+                    index,
+                    query,
+                );
+                for score in &mut scored.0 {
+                    if let Some(doc_id) = index.doc_id(&score.doc_path) {
+                        score.score += crate::ranking::proximity::positional_bonus(
+                            index, query, doc_id, config,
+                        );
+                    }
+                }
+                scored
+            }
+            RankingAlgo::QueryLikelihood(params) => QueryLikelihood {
+                params: params.clone(),
+            }
+            .score(index, query),
+            RankingAlgo::TFIDF => score_with(TFIDF, index, query),
         }
     }
 }
 
-fn score_with<S>(scorer: S, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored
+fn score_with<S, I>(scorer: S, index: &I, query: &AnalyzedQuery) -> Scored
 where
     S: Scorer,
+    I: RankedIndexReader + Sync,
 {
     let scores = DashMap::new();
 
     query.terms().par_bridge().for_each(|(term, query_term)| {
-        if let Some(documents) = inverted_index.get_postings(term) {
-            scorer.score(inverted_index, query, term, *query_term, documents, &scores)
+        if let Some(documents) = index.postings(term) {
+            scorer.score(index, query, term, *query_term, &documents, &scores)
         }
     });
 
@@ -104,7 +136,7 @@ where
             .iter()
             .par_bridge()
             .filter_map(|score| {
-                inverted_index.document(*score.key()).map(|metadata| Score {
+                index.document(*score.key()).map(|metadata| Score {
                     doc_path: metadata.path.clone(),
                     score: *score.value(),
                 })
@@ -114,19 +146,17 @@ where
 }
 
 impl RankingAlgo {
-    pub fn rank(
-        &self,
-        inverted_index: &InvertedIndex,
-        query: &AnalyzedQuery,
-        top_n: usize,
-    ) -> Option<Scored> {
+    pub fn rank<I>(&self, index: &I, query: &AnalyzedQuery, top_n: usize) -> Option<Scored>
+    where
+        I: RankedIndexReader + Sync,
+    {
         if query.is_empty() {
             return None;
         }
 
-        let mut ranking = self.score(inverted_index, query).0;
+        let mut ranking = self.score(index, query).0;
 
-        apply_static_quality_priors(inverted_index, &mut ranking);
+        apply_static_quality_priors(index, &mut ranking);
 
         ranking.sort_by(|a, b| {
             b.score
@@ -142,20 +172,23 @@ impl RankingAlgo {
         }
     }
 
-    pub fn rank_with_explanations(
+    pub fn rank_with_explanations<I>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         query: &AnalyzedQuery,
         top_n: usize,
-    ) -> Option<ScoredWithExplanations> {
-        let ranked = self.rank(inverted_index, query, top_n)?;
+    ) -> Option<ScoredWithExplanations>
+    where
+        I: RankedIndexReader + Sync,
+    {
+        let ranked = self.rank(index, query, top_n)?;
         let results = ranked
             .0
             .into_iter()
             .filter_map(|score| {
-                let doc_id = inverted_index.doc_id(&score.doc_path)?;
+                let doc_id = index.doc_id(&score.doc_path)?;
                 Some(ScoreWithExplanation {
-                    explanation: self.explain_doc(inverted_index, query, doc_id, score.score),
+                    explanation: self.explain_doc(index, query, doc_id, score.score),
                     score,
                 })
             })
@@ -164,74 +197,82 @@ impl RankingAlgo {
         Some(ScoredWithExplanations { results })
     }
 
-    pub fn rank_with_feedback(
+    pub fn rank_with_feedback<I>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         query: &AnalyzedQuery,
         top_n: usize,
         feedback_docs: usize,
         feedback_terms: usize,
-    ) -> Option<Scored> {
-        let seed = self.rank(inverted_index, query, feedback_docs)?;
+    ) -> Option<Scored>
+    where
+        I: crate::ranking::feedback::FeedbackTermSource + Sync,
+    {
+        let seed = self.rank(index, query, feedback_docs)?;
         let expanded = crate::ranking::feedback::expand_query_with_feedback(
-            inverted_index,
+            index,
             query,
             &seed.0,
             feedback_terms,
         );
 
-        self.rank(inverted_index, &expanded, top_n)
+        self.rank(index, &expanded, top_n)
     }
 
-    fn explain_doc(
+    fn explain_doc<I>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         query: &AnalyzedQuery,
         doc_id: DocId,
         final_score: f64,
-    ) -> ScoreExplanation {
+    ) -> ScoreExplanation
+    where
+        I: RankedIndexReader + Sync,
+    {
         let terms = match self {
-            RankingAlgo::BM25(hyper_params) => {
-                explain_bm25(inverted_index, query, doc_id, hyper_params)
+            RankingAlgo::BM25(hyper_params) => explain_bm25(index, query, doc_id, hyper_params),
+            RankingAlgo::BM25F(hyper_params) => explain_bm25f(index, query, doc_id, hyper_params),
+            RankingAlgo::BM25Proximity(hyper_params, _) => {
+                explain_bm25(index, query, doc_id, hyper_params)
             }
-            RankingAlgo::BM25F(hyper_params) => {
-                explain_bm25f(inverted_index, query, doc_id, hyper_params)
-            }
-            RankingAlgo::CosineSimilarity | RankingAlgo::TFIDF => {
-                explain_matched_terms(inverted_index, query, doc_id)
-            }
+            RankingAlgo::CosineSimilarity
+            | RankingAlgo::QueryLikelihood(_)
+            | RankingAlgo::TFIDF => explain_matched_terms(index, query, doc_id),
         };
 
         ScoreExplanation {
             final_score,
             query_intent: query.intent(),
             terms,
-            static_quality: static_quality_explanation(inverted_index, doc_id),
+            static_quality: static_quality_explanation(index, doc_id),
         }
     }
 
     pub fn needs_fielded_index(&self) -> bool {
-        matches!(self, Self::BM25F(_))
+        matches!(self, Self::BM25F(_) | Self::BM25Proximity(_, _))
     }
 }
 
-fn explain_bm25(
-    inverted_index: &InvertedIndex,
+fn explain_bm25<I>(
+    index: &I,
     query: &AnalyzedQuery,
     doc_id: DocId,
     hyper_params: &BM25HyperParams,
-) -> Vec<TermExplanation> {
+) -> Vec<TermExplanation>
+where
+    I: RankedIndexReader + Sync,
+{
     let scorer = BM25 {
         hyper_params: hyper_params.clone(),
     };
-    let avgdl = inverted_index.avg_doc_length();
-    let num_docs = inverted_index.num_docs();
+    let avgdl = index.avg_doc_length();
+    let num_docs = index.num_docs();
 
     query
         .terms()
         .filter_map(|(term, query_term)| {
-            let documents = inverted_index.get_postings(term)?;
-            let term_doc = documents.get(&doc_id)?;
+            let documents = index.postings(term)?;
+            let term_doc = documents.get(doc_id)?;
             let term_idf = idf(num_docs, documents.len());
             let contribution = scorer.score_term(
                 query_term.weight,
@@ -255,23 +296,22 @@ fn explain_bm25(
         .collect()
 }
 
-fn explain_matched_terms(
-    inverted_index: &InvertedIndex,
-    query: &AnalyzedQuery,
-    doc_id: DocId,
-) -> Vec<TermExplanation> {
+fn explain_matched_terms<I>(index: &I, query: &AnalyzedQuery, doc_id: DocId) -> Vec<TermExplanation>
+where
+    I: RankedIndexReader + Sync,
+{
     query
         .terms()
         .filter_map(|(term, query_term)| {
-            let documents = inverted_index.get_postings(term)?;
-            let term_doc = documents.get(&doc_id)?;
+            let documents = index.postings(term)?;
+            let term_doc = documents.get(doc_id)?;
             Some(TermExplanation {
                 term: term.0.clone(),
                 provenance: query_term.provenance.as_str().to_string(),
                 query_weight: query_term.weight,
                 term_frequency: term_doc.term_freq,
                 document_frequency: documents.len(),
-                idf: idf(inverted_index.num_docs(), documents.len()),
+                idf: idf(index.num_docs(), documents.len()),
                 matched_fields: field_contributions(term_doc, 0.0),
                 contribution: 0.0,
             })
@@ -279,25 +319,27 @@ fn explain_matched_terms(
         .collect()
 }
 
-fn explain_bm25f(
-    inverted_index: &InvertedIndex,
+fn explain_bm25f<I>(
+    index: &I,
     query: &AnalyzedQuery,
     doc_id: DocId,
     hyper_params: &BM25FHyperParams,
-) -> Vec<TermExplanation> {
+) -> Vec<TermExplanation>
+where
+    I: RankedIndexReader + Sync,
+{
     let scorer = BM25F {
         hyper_params: hyper_params.clone(),
     };
-    let num_docs = inverted_index.num_docs();
+    let num_docs = index.num_docs();
 
     query
         .terms()
         .filter_map(|(term, query_term)| {
-            let documents = inverted_index.get_postings(term)?;
-            let term_doc = documents.get(&doc_id)?;
+            let documents = index.postings(term)?;
+            let term_doc = documents.get(doc_id)?;
             let term_idf = idf(num_docs, documents.len());
-            let weighted_tf =
-                scorer.weighted_term_frequency(inverted_index, term_doc, query.intent());
+            let weighted_tf = scorer.weighted_term_frequency(index, term_doc, query.intent());
             let contribution = scorer.score_weighted_tf(query_term.weight, term_idf, weighted_tf);
 
             Some(TermExplanation {
@@ -382,21 +424,24 @@ fn field_contributions_with_weights(
     fields
 }
 
-fn apply_static_quality_priors(inverted_index: &InvertedIndex, ranking: &mut [Score]) {
+fn apply_static_quality_priors<I>(index: &I, ranking: &mut [Score])
+where
+    I: RankedIndexReader + Sync,
+{
     for score in ranking {
-        if let Some(doc_id) = inverted_index.doc_id(&score.doc_path)
-            && let Some(metadata) = inverted_index.document(doc_id)
+        if let Some(doc_id) = index.doc_id(&score.doc_path)
+            && let Some(metadata) = index.document(doc_id)
         {
             score.score += metadata.quality_signals.prior_score();
         }
     }
 }
 
-fn static_quality_explanation(
-    inverted_index: &InvertedIndex,
-    doc_id: DocId,
-) -> Vec<StaticQualityContribution> {
-    let Some(metadata) = inverted_index.document(doc_id) else {
+fn static_quality_explanation<I>(index: &I, doc_id: DocId) -> Vec<StaticQualityContribution>
+where
+    I: RankedIndexReader + Sync,
+{
+    let Some(metadata) = index.document(doc_id) else {
         return Vec::new();
     };
     let signals = &metadata.quality_signals;
@@ -480,6 +525,21 @@ impl FromStr for RankingAlgo {
                 Ok(RankingAlgo::BM25(hyper_params))
             }
             "bm25f" => Ok(RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())),
+            "bm25-proximity" | "proximity" => {
+                let hyper_params =
+                    get_configuration().map_err(|e| format!("failed to load BM25 config: {e}"))?;
+
+                Ok(RankingAlgo::BM25Proximity(
+                    hyper_params,
+                    ProximityConfig::default(),
+                ))
+            }
+            "ql" | "ql-dirichlet" | "query-likelihood" => Ok(RankingAlgo::QueryLikelihood(
+                QueryLikelihoodParams::dirichlet_defaults(),
+            )),
+            "ql-jm" | "jelinek-mercer" => Ok(RankingAlgo::QueryLikelihood(
+                QueryLikelihoodParams::jelinek_mercer_defaults(),
+            )),
             "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }
@@ -496,12 +556,88 @@ mod tests {
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
     use rust_stemmers::{Algorithm, Stemmer};
 
-    use super::{BM25FHyperParams, BM25HyperParams, RankingAlgo};
+    use super::{BM25FHyperParams, BM25HyperParams, ProximityConfig, RankingAlgo};
     use crate::{
         config::Config,
-        index::{DocumentField, InvertedIndex, Term},
+        index::{
+            DocId, DocumentField, DocumentMetadata, InvertedIndex, OwnedPostingList, PostingList,
+            RankedIndexReader, Term, TermDocument,
+        },
         query::AnalyzedQuery,
+        tokenizer::FileType,
     };
+
+    struct OwnedPostingsReader {
+        postings: HashMap<Term, OwnedPostingList>,
+        documents: HashMap<DocId, DocumentMetadata>,
+    }
+
+    impl RankedIndexReader for OwnedPostingsReader {
+        type Postings<'a> = OwnedPostingList;
+
+        fn postings(&self, term: &Term) -> Option<Self::Postings<'_>> {
+            self.postings.get(term).cloned()
+        }
+
+        fn documents(&self) -> Vec<&DocumentMetadata> {
+            self.documents.values().collect()
+        }
+
+        fn document(&self, id: DocId) -> Option<&DocumentMetadata> {
+            self.documents.get(&id)
+        }
+
+        fn doc_id(&self, path: &Path) -> Option<DocId> {
+            self.documents
+                .iter()
+                .find_map(|(doc_id, metadata)| (metadata.path == path).then_some(*doc_id))
+        }
+
+        fn document_norm(&self, _: DocId) -> Option<f64> {
+            None
+        }
+
+        fn num_docs(&self) -> usize {
+            self.documents.len()
+        }
+
+        fn avg_doc_length(&self) -> f64 {
+            let total = self
+                .documents
+                .values()
+                .map(|metadata| metadata.token_length)
+                .sum::<usize>();
+            total as f64 / self.documents.len() as f64
+        }
+
+        fn avg_field_length(&self, _: DocumentField) -> f64 {
+            0.0
+        }
+
+        fn doc_freq(&self, term: &Term) -> usize {
+            self.postings.get(term).map_or(0, |postings| postings.len())
+        }
+
+        fn total_token_count(&self) -> u64 {
+            self.documents
+                .values()
+                .map(|metadata| metadata.token_length as u64)
+                .sum()
+        }
+
+        fn vocabulary_size(&self) -> usize {
+            self.postings.len()
+        }
+
+        fn collection_frequency(&self, term: &Term) -> usize {
+            self.postings.get(term).map_or(0, |postings| {
+                postings
+                    .iter()
+                    .map(|(_, term_doc)| term_doc.term_freq)
+                    .sum()
+            })
+        }
+    }
 
     fn index() -> InvertedIndex {
         InvertedIndex::from_documents(&[
@@ -541,6 +677,53 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn ranking_uses_reader_trait_with_owned_posting_lists() {
+        let rust = Term("rust".to_string());
+        let first = DocId::from_u32(0);
+        let second = DocId::from_u32(1);
+        let reader = OwnedPostingsReader {
+            postings: HashMap::from([(
+                rust.clone(),
+                OwnedPostingList::new(vec![
+                    (first, TermDocument::unfielded(2, 2)),
+                    (second, TermDocument::unfielded(2, 1)),
+                ]),
+            )]),
+            documents: HashMap::from([
+                (
+                    first,
+                    DocumentMetadata {
+                        id: first,
+                        path: PathBuf::from("first.rs"),
+                        token_length: 2,
+                        file_size_bytes: 10,
+                        file_type: FileType::Rust,
+                        field_lengths: HashMap::new(),
+                        quality_signals: Default::default(),
+                    },
+                ),
+                (
+                    second,
+                    DocumentMetadata {
+                        id: second,
+                        path: PathBuf::from("second.rs"),
+                        token_length: 2,
+                        file_size_bytes: 10,
+                        file_type: FileType::Rust,
+                        field_lengths: HashMap::new(),
+                        quality_signals: Default::default(),
+                    },
+                ),
+            ]),
+        };
+        let query = AnalyzedQuery::from_frequencies("rust", HashMap::from([(rust, 1)]));
+
+        let ranked = bm25().rank(&reader, &query, 2).unwrap();
+
+        assert_eq!(ranked.0[0].doc_path, PathBuf::from("first.rs"));
     }
 
     #[test]
@@ -660,5 +843,73 @@ mod tests {
                 .iter()
                 .any(|signal| signal.signal == "entry_point" && signal.contribution > 0.0)
         );
+    }
+
+    #[test]
+    fn quoted_phrase_requires_adjacent_terms_in_one_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "phrase.rs", "// mean average precision");
+        write_temp_file(dir.path(), "split.rs", "// mean average\nfn precision() {}");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("\"mean average precision\"", &test_config());
+        let phrase = query.phrases().first().unwrap();
+
+        let phrase_doc = index.doc_id(Path::new("phrase.rs")).unwrap();
+        let split_doc = index.doc_id(Path::new("split.rs")).unwrap();
+
+        assert_eq!(
+            crate::ranking::proximity::phrase_match_count(&index, phrase_doc, phrase),
+            1
+        );
+        assert_eq!(
+            crate::ranking::proximity::phrase_match_count(&index, split_doc, phrase),
+            0
+        );
+    }
+
+    #[test]
+    fn proximity_score_promotes_near_terms_over_far_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "near.rs", "// alpha beta gamma");
+        write_temp_file(
+            dir.path(),
+            "far.rs",
+            "// alpha filler filler filler filler filler filler beta gamma",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("alpha gamma", &test_config());
+        let ranking = RankingAlgo::BM25Proximity(
+            BM25HyperParams { k1: 1.2, b: 0.75 },
+            ProximityConfig {
+                window: 4,
+                phrase_boost: 0.0,
+                proximity_boost: 10.0,
+            },
+        )
+        .rank(&index, &query, 2)
+        .unwrap()
+        .0;
+
+        assert_eq!(ranking[0].doc_path, PathBuf::from("near.rs"));
+    }
+
+    #[test]
+    fn phrase_matching_does_not_cross_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "alpha.rs", "// alpha");
+        write_temp_file(dir.path(), "beta.rs", "// beta");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("\"alpha beta\"", &test_config());
+        let phrase = query.phrases().first().unwrap();
+
+        for metadata in index.documents() {
+            assert_eq!(
+                crate::ranking::proximity::phrase_match_count(&index, metadata.id, phrase),
+                0
+            );
+        }
     }
 }

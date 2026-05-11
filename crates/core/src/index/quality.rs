@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct StaticQualitySignals {
     pub file_depth: usize,
     pub file_size_bytes: u64,

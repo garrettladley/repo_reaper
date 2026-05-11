@@ -68,6 +68,12 @@ struct Args {
     /// Write ranking feature export JSONL while evaluating
     #[clap(long)]
     export_features: Option<PathBuf>,
+    /// Directory for ranked index snapshots and update event logs
+    #[clap(long)]
+    index_dir: Option<PathBuf>,
+    /// Rebuild the ranked index even when a compatible snapshot exists
+    #[clap(long, default_value = "false")]
+    reindex: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -112,9 +118,13 @@ fn main() -> Result<()> {
         args.directory,
         config,
         args.ranking_algorithm,
-        args.top_n,
-        args.query_expansion,
-        args.feedback_expansion,
+        live_search::LiveSearchOptions {
+            top_n: args.top_n,
+            query_expansion: args.query_expansion,
+            feedback_expansion: args.feedback_expansion,
+            index_dir: args.index_dir,
+            reindex: args.reindex,
+        },
     )
 }
 
