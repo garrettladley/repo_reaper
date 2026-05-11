@@ -49,13 +49,30 @@ impl Scorer for BM25 {
         documents.par_iter().for_each(|(doc_id, term_doc)| {
             let tf = term_doc.term_freq as f64;
             let doc_length = term_doc.length as f64;
-            let score = query_term.weight * idf * (tf * (self.hyper_params.k1 + 1.0))
-                / (tf
-                    + self.hyper_params.k1
-                        * (1.0 - self.hyper_params.b + self.hyper_params.b * doc_length / avgdl));
+            let score = self.score_term(query_term.weight, idf, tf, doc_length, avgdl);
 
             *scores.entry(*doc_id).or_insert(0.0) += score;
         });
+    }
+}
+
+impl BM25 {
+    pub fn score_term(
+        &self,
+        query_weight: f64,
+        idf: f64,
+        tf: f64,
+        doc_length: f64,
+        avgdl: f64,
+    ) -> f64 {
+        if tf == 0.0 || avgdl == 0.0 {
+            return 0.0;
+        }
+
+        query_weight * idf * (tf * (self.hyper_params.k1 + 1.0))
+            / (tf
+                + self.hyper_params.k1
+                    * (1.0 - self.hyper_params.b + self.hyper_params.b * doc_length / avgdl))
     }
 }
 

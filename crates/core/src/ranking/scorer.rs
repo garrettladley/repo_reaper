@@ -4,12 +4,16 @@ use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    index::{DocId, InvertedIndex, Term, TermDocument},
+    index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
     query::{AnalyzedQuery, QueryTerm},
-    ranking::{BM25, BM25HyperParams, CosineSimilarity, TFIDF, get_configuration},
+    ranking::{
+        BM25, BM25HyperParams, CosineSimilarity, FieldContribution, ScoreExplanation,
+        ScoreWithExplanation, ScoredWithExplanations, TFIDF, TermExplanation, get_configuration,
+        idf,
+    },
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Scored(pub Vec<Score>);
 
 impl std::fmt::Display for Scored {
@@ -24,7 +28,7 @@ impl std::fmt::Display for Scored {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Score {
     pub doc_path: PathBuf,
     pub score: f64,
@@ -123,6 +127,138 @@ impl RankingAlgo {
             Some(Scored(ranking))
         }
     }
+
+    pub fn rank_with_explanations(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &AnalyzedQuery,
+        top_n: usize,
+    ) -> Option<ScoredWithExplanations> {
+        let ranked = self.rank(inverted_index, query, top_n)?;
+        let results = ranked
+            .0
+            .into_iter()
+            .filter_map(|score| {
+                let doc_id = inverted_index.doc_id(&score.doc_path)?;
+                Some(ScoreWithExplanation {
+                    explanation: self.explain_doc(inverted_index, query, doc_id, score.score),
+                    score,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        Some(ScoredWithExplanations { results })
+    }
+
+    fn explain_doc(
+        &self,
+        inverted_index: &InvertedIndex,
+        query: &AnalyzedQuery,
+        doc_id: DocId,
+        final_score: f64,
+    ) -> ScoreExplanation {
+        let terms = match self {
+            RankingAlgo::BM25(hyper_params) => {
+                explain_bm25(inverted_index, query, doc_id, hyper_params)
+            }
+            RankingAlgo::CosineSimilarity | RankingAlgo::TFIDF => {
+                explain_matched_terms(inverted_index, query, doc_id)
+            }
+        };
+
+        ScoreExplanation { final_score, terms }
+    }
+}
+
+fn explain_bm25(
+    inverted_index: &InvertedIndex,
+    query: &AnalyzedQuery,
+    doc_id: DocId,
+    hyper_params: &BM25HyperParams,
+) -> Vec<TermExplanation> {
+    let scorer = BM25 {
+        hyper_params: hyper_params.clone(),
+    };
+    let avgdl = inverted_index.avg_doc_length();
+    let num_docs = inverted_index.num_docs();
+
+    query
+        .terms()
+        .filter_map(|(term, query_term)| {
+            let documents = inverted_index.get_postings(term)?;
+            let term_doc = documents.get(&doc_id)?;
+            let term_idf = idf(num_docs, documents.len());
+            let contribution = scorer.score_term(
+                query_term.weight,
+                term_idf,
+                term_doc.term_freq as f64,
+                term_doc.length as f64,
+                avgdl,
+            );
+
+            Some(TermExplanation {
+                term: term.0.clone(),
+                query_weight: query_term.weight,
+                term_frequency: term_doc.term_freq,
+                document_frequency: documents.len(),
+                idf: term_idf,
+                matched_fields: field_contributions(term_doc, contribution),
+                contribution,
+            })
+        })
+        .collect()
+}
+
+fn explain_matched_terms(
+    inverted_index: &InvertedIndex,
+    query: &AnalyzedQuery,
+    doc_id: DocId,
+) -> Vec<TermExplanation> {
+    query
+        .terms()
+        .filter_map(|(term, query_term)| {
+            let documents = inverted_index.get_postings(term)?;
+            let term_doc = documents.get(&doc_id)?;
+            Some(TermExplanation {
+                term: term.0.clone(),
+                query_weight: query_term.weight,
+                term_frequency: term_doc.term_freq,
+                document_frequency: documents.len(),
+                idf: idf(inverted_index.num_docs(), documents.len()),
+                matched_fields: field_contributions(term_doc, 0.0),
+                contribution: 0.0,
+            })
+        })
+        .collect()
+}
+
+fn field_contributions(term_doc: &TermDocument, contribution: f64) -> Vec<FieldContribution> {
+    let mut fields = DocumentField::ALL
+        .into_iter()
+        .filter_map(|field| {
+            let term_frequency = term_doc.field_term_freq(field);
+            if term_frequency == 0 {
+                return None;
+            }
+
+            let proportional_contribution = if term_doc.term_freq == 0 {
+                0.0
+            } else {
+                contribution * term_frequency as f64 / term_doc.term_freq as f64
+            };
+
+            Some(FieldContribution {
+                field,
+                term_frequency,
+                field_length: term_doc.field_length(field),
+                field_weight: 1.0,
+                contribution: proportional_contribution,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    fields.sort_by_key(|field| field.field);
+    fields
 }
 
 impl FromStr for RankingAlgo {
@@ -145,11 +281,18 @@ impl FromStr for RankingAlgo {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{
+        collections::{HashMap, HashSet},
+        path::{Path, PathBuf},
+    };
+
+    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+    use rust_stemmers::{Algorithm, Stemmer};
 
     use super::{BM25HyperParams, RankingAlgo};
     use crate::{
-        index::{InvertedIndex, Term},
+        config::Config,
+        index::{DocumentField, InvertedIndex, Term},
         query::AnalyzedQuery,
     };
 
@@ -172,6 +315,25 @@ mod tests {
 
     fn bm25() -> RankingAlgo {
         RankingAlgo::BM25(BM25HyperParams { k1: 1.2, b: 0.75 })
+    }
+
+    fn test_config() -> Config {
+        Config {
+            n_grams: 1,
+            stemmer: Stemmer::create(Algorithm::English),
+            stop_words: stop_words::get(stop_words::LANGUAGE::English)
+                .par_iter()
+                .map(|word| word.to_string())
+                .collect::<HashSet<String>>(),
+        }
+    }
+
+    fn write_temp_file(dir: &Path, name: &str, content: &str) {
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(path, content).unwrap();
     }
 
     #[test]
@@ -204,5 +366,45 @@ mod tests {
 
         assert_eq!(rust_top[0].doc_path, PathBuf::from("rust.rs"));
         assert_eq!(code_top[0].doc_path, PathBuf::from("code.rs"));
+    }
+
+    #[test]
+    fn bm25_explanations_include_terms_fields_and_contributions() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/inverted_index.rs",
+            "fn unrelated() { let value = \"needle\"; }",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::from_weights(
+            "inverted index",
+            HashMap::from([(Term("inverted_index".to_string()), 1.0)]),
+        );
+
+        let explanations = bm25().rank_with_explanations(&index, &query, 1).unwrap();
+        let result = explanations.results.first().unwrap();
+        let term = result.explanation.terms.first().unwrap();
+
+        assert_eq!(
+            result.score.doc_path,
+            PathBuf::from("src/inverted_index.rs")
+        );
+        assert_eq!(term.term, "inverted_index");
+        assert_eq!(term.document_frequency, 1);
+        assert!(term.idf > 0.0);
+        assert!(term.contribution > 0.0);
+        assert!(
+            term.matched_fields
+                .iter()
+                .any(|field| field.field == DocumentField::FileName)
+        );
+        assert!(
+            term.matched_fields
+                .iter()
+                .any(|field| field.field == DocumentField::RelativePath)
+        );
+        assert_eq!(result.explanation.final_score, result.score.score);
     }
 }
