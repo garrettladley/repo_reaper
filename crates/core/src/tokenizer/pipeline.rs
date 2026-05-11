@@ -2,16 +2,10 @@ use std::collections::HashMap;
 
 use rayon::{iter::ParallelIterator, slice::ParallelSlice};
 
-use crate::{config::Config, index::Term};
+use crate::{config::Config, index::Term, tokenizer::tokenize_identifier};
 
 pub fn n_gram_transform(content: &str, config: &Config) -> HashMap<Term, u32> {
-    content
-        .to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .filter(|token| !config.stop_words.contains(*token))
-        .map(|token| config.stemmer.stem(token).to_string())
-        .collect::<Vec<_>>()
+    content_tokens(content, config)
         .par_windows(config.n_grams)
         .map(|window| window.join(" "))
         .map(Term)
@@ -25,6 +19,44 @@ pub fn n_gram_transform(content: &str, config: &Config) -> HashMap<Term, u32> {
             }
             a
         })
+}
+
+pub fn content_tokens(content: &str, config: &Config) -> Vec<String> {
+    content
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|s| !s.is_empty())
+        .flat_map(|token| content_tokens_for_lexeme(token, config))
+        .collect()
+}
+
+fn content_tokens_for_lexeme(lexeme: &str, config: &Config) -> Vec<String> {
+    let Some(identifier) = tokenize_identifier(lexeme) else {
+        return Vec::new();
+    };
+
+    let has_identifier_shape = identifier.parts.len() > 1 || lexeme.contains(['_', '-']);
+    let mut tokens = Vec::new();
+
+    if has_identifier_shape {
+        push_unique(&mut tokens, identifier.exact);
+        push_unique(&mut tokens, identifier.compound);
+    }
+
+    for part in identifier.parts {
+        if config.stop_words.contains(&part) {
+            continue;
+        }
+
+        push_unique(&mut tokens, config.stemmer.stem(&part).to_string());
+    }
+
+    tokens
+}
+
+fn push_unique(tokens: &mut Vec<String>, token: String) {
+    if !tokens.iter().any(|existing| existing == &token) {
+        tokens.push(token);
+    }
 }
 
 #[cfg(test)]
@@ -111,5 +143,34 @@ mod tests {
     fn stop_words_excluded_before_frequency_counting() {
         let result = n_gram_transform("the the the quick brown", &test_config(1));
         assert_eq!(result, term_map(&[("quick", 1), ("brown", 1)]));
+    }
+
+    #[test]
+    fn identifiers_emit_split_tokens_and_compounds() {
+        let result = n_gram_transform(
+            "let value = HTTPSConnection::parse2Json();",
+            &test_config(1),
+        );
+
+        assert!(result.contains_key(&Term("httpsconnection".to_string())));
+        assert!(result.contains_key(&Term("https".to_string())));
+        assert!(result.contains_key(&Term("connect".to_string())));
+        assert!(result.contains_key(&Term("parse2json".to_string())));
+        assert!(result.contains_key(&Term("pars".to_string())));
+        assert!(result.contains_key(&Term("2".to_string())));
+        assert!(result.contains_key(&Term("json".to_string())));
+    }
+
+    #[test]
+    fn split_query_terms_match_compound_identifiers() {
+        let document = n_gram_transform("fn repo_reaper() {}", &test_config(1));
+        let query = n_gram_transform("reaper", &test_config(1));
+
+        for term in query.keys() {
+            assert!(
+                document.contains_key(term),
+                "expected document tokens to contain query term {term:?}"
+            );
+        }
     }
 }
