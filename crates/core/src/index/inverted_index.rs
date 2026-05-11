@@ -4,10 +4,14 @@ use std::{
 };
 
 use crate::{
+    code_intelligence::{DocumentFeature, DocumentFeatures},
     config::Config,
     index::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
-        document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+        document_registry::{
+            DocId, DocumentCatalog, DocumentMetadata, DocumentMetadataUpdate, DocumentRegistry,
+            FieldSpan,
+        },
         field::DocumentField,
         quality::StaticQualitySignals,
         term::Term,
@@ -136,6 +140,8 @@ struct ProcessedDocument {
     field_term_frequencies: HashMap<DocumentField, HashMap<Term, u32>>,
     field_term_positions: HashMap<DocumentField, HashMap<Term, PositionList>>,
     field_lengths: HashMap<DocumentField, usize>,
+    field_spans: Vec<FieldSpan>,
+    features: Vec<DocumentFeature>,
     token_length: usize,
     file_size_bytes: u64,
     file_type: FileType,
@@ -334,6 +340,8 @@ where
             field_term_frequencies: HashMap::new(),
             field_term_positions: HashMap::new(),
             field_lengths: HashMap::new(),
+            field_spans: Vec::new(),
+            features: Vec::new(),
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type: FileType::UnknownText,
@@ -358,7 +366,7 @@ where
         let mut term_frequencies = HashMap::new();
 
         for field in DocumentField::ALL {
-            let Some(raw_value) = raw_fields.get(&field) else {
+            let Some(raw_value) = raw_fields.values.get(&field) else {
                 continue;
             };
             let tokens = profile.analyze(field.analyzer_field(), raw_value, config);
@@ -404,6 +412,8 @@ where
             field_term_frequencies,
             field_term_positions,
             field_lengths,
+            field_spans: raw_fields.spans,
+            features: raw_fields.features,
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type,
@@ -460,14 +470,16 @@ where
         postings: &mut HashMap<Term, BTreeMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
-        let doc_id = registry.insert_or_update_with_fields(
-            document.path.clone(),
-            document.token_length,
-            document.file_size_bytes,
-            document.file_type,
-            document.field_lengths.clone(),
-            document.quality_signals.clone(),
-        );
+        let doc_id = registry.insert_or_update_with_features(DocumentMetadataUpdate {
+            path: document.path.clone(),
+            token_length: document.token_length,
+            file_size_bytes: document.file_size_bytes,
+            file_type: document.file_type,
+            field_lengths: document.field_lengths.clone(),
+            field_spans: document.field_spans.clone(),
+            features: document.features.clone(),
+            quality_signals: document.quality_signals.clone(),
+        });
 
         for (term, doc_map) in Self::postings_for_document(doc_id, &document) {
             postings.entry(term).or_default().extend(doc_map);
@@ -658,34 +670,118 @@ where
     }
 }
 
-fn raw_document_fields(path: &Path, content: &str) -> HashMap<DocumentField, String> {
-    let mut fields = HashMap::new();
+#[derive(Debug, Default)]
+struct RawDocumentFields {
+    values: HashMap<DocumentField, String>,
+    spans: Vec<FieldSpan>,
+    features: Vec<DocumentFeature>,
+}
 
-    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
-        fields.insert(DocumentField::FileName, file_name.to_string());
+fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
+    let file_type = FileType::detect(path);
+    let features = document_features(path, content, file_type);
+    let mut fields = RawDocumentFields::default();
+
+    for feature in features.features() {
+        if feature.text.trim().is_empty() {
+            continue;
+        }
+
+        let field_value = fields.values.entry(feature.field).or_default();
+        if !field_value.is_empty() {
+            field_value.push('\n');
+        }
+        field_value.push_str(&feature.text);
+
+        if let Some(span) = feature.span {
+            fields.spans.push(FieldSpan {
+                field: feature.field,
+                start_byte: span.start,
+                end_byte: span.end,
+            });
+        }
+        if is_exportable_code_feature(feature.field) {
+            fields.features.push(feature.clone());
+        }
     }
-
-    fields.insert(
-        DocumentField::RelativePath,
-        path.to_string_lossy().into_owned(),
-    );
-
-    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
-        fields.insert(DocumentField::Extension, extension.to_string());
-    }
-
-    fields.insert(DocumentField::Content, content.to_string());
-    fields.insert(
-        DocumentField::Identifier,
-        extract_identifier_lexemes(content).join(" "),
-    );
-    fields.insert(DocumentField::Comment, extract_comments(content).join("\n"));
-    fields.insert(
-        DocumentField::StringLiteral,
-        extract_string_literals(content).join("\n"),
-    );
 
     fields
+}
+
+fn is_exportable_code_feature(field: DocumentField) -> bool {
+    matches!(
+        field,
+        DocumentField::Symbol
+            | DocumentField::Import
+            | DocumentField::Comment
+            | DocumentField::StringLiteral
+            | DocumentField::Frontmatter
+    )
+}
+
+fn document_features(path: &Path, content: &str, file_type: FileType) -> DocumentFeatures {
+    let mut features = Vec::new();
+
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        features.push(DocumentFeature {
+            field: DocumentField::FileName,
+            text: file_name.to_string(),
+            span: None,
+        });
+    }
+
+    features.push(DocumentFeature {
+        field: DocumentField::RelativePath,
+        text: path.to_string_lossy().into_owned(),
+        span: None,
+    });
+
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        features.push(DocumentFeature {
+            field: DocumentField::Extension,
+            text: extension.to_string(),
+            span: None,
+        });
+    }
+
+    features.push(DocumentFeature {
+        field: DocumentField::Content,
+        text: content.to_string(),
+        span: None,
+    });
+    features.push(DocumentFeature {
+        field: DocumentField::Identifier,
+        text: extract_identifier_lexemes(content).join(" "),
+        span: None,
+    });
+
+    let parser_fields = crate::code_intelligence::extract(file_type, path, content)
+        .ok()
+        .flatten();
+    if let Some(parser_fields) = parser_fields {
+        features.extend(parser_fields.into_features());
+    } else {
+        features.extend(
+            extract_comments(content)
+                .into_iter()
+                .map(|text| DocumentFeature {
+                    field: DocumentField::Comment,
+                    text,
+                    span: None,
+                }),
+        );
+        features.extend(
+            extract_string_literals(content)
+                .into_iter()
+                .map(|text| DocumentFeature {
+                    field: DocumentField::StringLiteral,
+                    text,
+                    span: None,
+                }),
+        );
+    }
+
+    DocumentFeatures::new(file_type, features)
 }
 
 fn extract_identifier_lexemes(content: &str) -> Vec<String> {
@@ -1142,6 +1238,111 @@ mod tests {
         assert_eq!(term_doc.field_term_freq(DocumentField::FileName), 1);
         assert_eq!(term_doc.field_term_freq(DocumentField::RelativePath), 1);
         assert_eq!(term_doc.field_term_freq(DocumentField::Content), 0);
+    }
+
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn fielded_index_populates_rust_tree_sitter_symbol_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/bm25.rs",
+            r#"
+use crate::ranking::Score;
+
+// ranking helper
+pub struct BM25;
+pub enum RankingMode { Fast }
+pub trait Scorer { fn bm25_score(&self) -> Score; }
+impl Scorer for BM25 {
+    fn bm25_score(&self) -> Score {
+        "symbol literal".into()
+    }
+}
+"#,
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let doc_id = index.doc_id(Path::new("src/bm25.rs")).unwrap();
+        let bm25_docs = index.get_postings(&Term("bm25".to_string())).unwrap();
+        let bm25_doc = bm25_docs.get(&doc_id).unwrap();
+        let score_docs = index.get_postings(&Term("score".to_string())).unwrap();
+        let score_doc = score_docs.get(&doc_id).unwrap();
+        let metadata = index.document(doc_id).unwrap();
+
+        assert!(bm25_doc.field_term_freq(DocumentField::Symbol) > 0);
+        assert!(score_doc.field_term_freq(DocumentField::Symbol) > 0);
+        assert!(metadata.field_length(DocumentField::Import) > 0);
+        assert!(metadata.field_length(DocumentField::Comment) > 0);
+        assert!(metadata.field_length(DocumentField::StringLiteral) > 0);
+        assert!(
+            metadata
+                .field_spans
+                .iter()
+                .any(|span| span.field == DocumentField::Symbol && span.start_byte < span.end_byte)
+        );
+    }
+
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn fielded_index_populates_supported_language_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "pkg/search.py",
+            "import os\n# python comment\nclass Searcher:\n    def run_query(self):\n        return \"py literal\"\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.ts",
+            "import { thing } from './thing';\n// ts comment\ninterface Searcher { runQuery(): string }\nconst label = \"ts literal\";\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.js",
+            "import thing from './thing';\n// js comment\nclass Searcher { runQuery() { return \"js literal\"; } }\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.go",
+            "package pkg\nimport \"fmt\"\n// go comment\ntype Searcher struct {}\nfunc (s Searcher) RunQuery() string { return \"go literal\" }\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "README.md",
+            "---\ntitle: code search\n---\n# Search Guide\n\n```rust\nfn example() {}\n```\n",
+        );
+        write_temp_file(dir.path(), "config.toml", "name = \"fallback\"");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+
+        for path in [
+            "pkg/search.py",
+            "pkg/search.ts",
+            "pkg/search.js",
+            "pkg/search.go",
+        ] {
+            let doc_id = index.doc_id(Path::new(path)).unwrap();
+            let metadata = index.document(doc_id).unwrap();
+
+            assert!(metadata.field_length(DocumentField::Symbol) > 0, "{path}");
+            assert!(metadata.field_length(DocumentField::Import) > 0, "{path}");
+            assert!(metadata.field_length(DocumentField::Comment) > 0, "{path}");
+            assert!(
+                metadata.field_length(DocumentField::StringLiteral) > 0,
+                "{path}"
+            );
+        }
+
+        let markdown_id = index.doc_id(Path::new("README.md")).unwrap();
+        let markdown = index.document(markdown_id).unwrap();
+        assert!(markdown.field_length(DocumentField::Symbol) > 0);
+        assert!(markdown.field_length(DocumentField::Frontmatter) > 0);
+
+        let toml_id = index.doc_id(Path::new("config.toml")).unwrap();
+        let toml = index.document(toml_id).unwrap();
+        assert_eq!(toml.field_length(DocumentField::Symbol), 0);
+        assert!(toml.field_length(DocumentField::Content) > 0);
     }
 
     #[test]

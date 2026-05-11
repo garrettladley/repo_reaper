@@ -16,7 +16,9 @@ pub use corpus::{
     FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, IndexCorpusScan, IndexSkipReason,
     SkippedDocument,
 };
-pub use document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry};
+pub use document_registry::{
+    DocId, DocumentCatalog, DocumentMetadata, DocumentMetadataUpdate, DocumentRegistry, FieldSpan,
+};
 pub use engine::{SearchEngine, SearchEngineError};
 pub use event_log::IndexEvent;
 pub use field::DocumentField;

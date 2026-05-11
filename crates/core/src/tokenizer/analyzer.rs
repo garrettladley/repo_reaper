@@ -65,8 +65,11 @@ pub enum AnalyzerField {
     Extension,
     Content,
     Identifier,
+    Symbol,
+    Import,
     Comment,
     StringLiteral,
+    Frontmatter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +78,11 @@ pub struct AnalyzerProfile {
     exact_fields: FieldAnalyzer,
     content: FieldAnalyzer,
     identifier: FieldAnalyzer,
+    symbol: FieldAnalyzer,
+    import: FieldAnalyzer,
     comment: FieldAnalyzer,
     string_literal: FieldAnalyzer,
+    frontmatter: FieldAnalyzer,
 }
 
 impl AnalyzerProfile {
@@ -87,6 +93,8 @@ impl AnalyzerProfile {
     pub fn for_file_type(file_type: FileType) -> Self {
         let exact_fields = FieldAnalyzer::exact_identifier();
         let identifier = FieldAnalyzer::identifier();
+        let symbol = FieldAnalyzer::identifier();
+        let import = FieldAnalyzer::identifier();
         let content = if file_type.is_code() {
             FieldAnalyzer::code_content()
         } else {
@@ -98,14 +106,18 @@ impl AnalyzerProfile {
             FieldAnalyzer::comment()
         };
         let string_literal = FieldAnalyzer::string_literal();
+        let frontmatter = FieldAnalyzer::prose();
 
         Self {
             file_type,
             exact_fields,
             content,
             identifier,
+            symbol,
+            import,
             comment,
             string_literal,
+            frontmatter,
         }
     }
 
@@ -120,8 +132,11 @@ impl AnalyzerProfile {
             }
             AnalyzerField::Content => self.content,
             AnalyzerField::Identifier => self.identifier,
+            AnalyzerField::Symbol => self.symbol,
+            AnalyzerField::Import => self.import,
             AnalyzerField::Comment => self.comment,
             AnalyzerField::StringLiteral => self.string_literal,
+            AnalyzerField::Frontmatter => self.frontmatter,
         }
     }
 

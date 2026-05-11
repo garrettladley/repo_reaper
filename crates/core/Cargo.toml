@@ -4,6 +4,18 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[features]
+default = ["tree-sitter"]
+tree-sitter = [
+    "dep:tree-sitter",
+    "dep:tree-sitter-rust",
+    "dep:tree-sitter-python",
+    "dep:tree-sitter-javascript",
+    "dep:tree-sitter-typescript",
+    "dep:tree-sitter-go",
+    "dep:tree-sitter-md-025",
+]
+
 [lints]
 workspace = true
 
@@ -20,6 +32,13 @@ dashmap = "^6"
 thiserror = "^2.0"
 regex = "^1.12"
 memmap2 = "^0.9"
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24.2", optional = true }
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-typescript = { version = "0.23.2", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-md-025 = { version = "0.5.6", optional = true, features = ["parser"] }
 
 [dev-dependencies]
 criterion = "^0.5"

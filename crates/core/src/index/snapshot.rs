@@ -194,14 +194,7 @@ impl IndexSnapshot {
     fn into_index(self) -> InvertedIndex {
         let mut registry = DocumentRegistry::new();
         for metadata in self.documents {
-            registry.insert_or_update_with_fields(
-                metadata.path,
-                metadata.token_length,
-                metadata.file_size_bytes,
-                metadata.file_type,
-                metadata.field_lengths,
-                metadata.quality_signals,
-            );
+            registry.insert_or_update_record(metadata.into_update());
         }
 
         let postings = self
@@ -223,14 +216,14 @@ impl IndexSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, fs};
+    use std::{collections::HashSet, fs, path::Path};
 
     use rust_stemmers::{Algorithm, Stemmer};
 
     use super::{SnapshotError, load_snapshot, snapshot_path, write_snapshot};
     use crate::{
         config::Config,
-        index::InvertedIndex,
+        index::{DocumentField, InvertedIndex},
         query::AnalyzedQuery,
         ranking::{BM25HyperParams, RankingAlgo},
         tokenizer::n_gram_transform,
@@ -266,6 +259,42 @@ mod tests {
             algo.rank(&loaded, &query, 10),
             algo.rank(&index, &query, 10)
         );
+    }
+
+    #[test]
+    fn snapshot_round_trips_exportable_code_features() {
+        let source = tempfile::tempdir().unwrap();
+        let index_dir = tempfile::tempdir().unwrap();
+        fs::write(
+            source.path().join("a.rs"),
+            r#"
+use std::collections::HashMap;
+
+pub fn bm25_score() {
+    let label = "BM25 score";
+}
+"#,
+        )
+        .unwrap();
+        let config = config();
+        let index = InvertedIndex::new_fielded(source.path(), &config, Some(source.path()));
+        let doc_id = index.doc_id(Path::new("a.rs")).unwrap();
+        let original = index.document(doc_id).unwrap();
+        assert!(
+            original
+                .features
+                .iter()
+                .any(|feature| feature.field == DocumentField::Symbol
+                    && feature.text == "bm25_score")
+        );
+
+        write_snapshot(&index, index_dir.path(), source.path(), &config).unwrap();
+
+        let loaded = load_snapshot(index_dir.path(), source.path(), &config).unwrap();
+        let loaded_doc_id = loaded.doc_id(Path::new("a.rs")).unwrap();
+        let loaded_metadata = loaded.document(loaded_doc_id).unwrap();
+
+        assert_eq!(loaded_metadata.features, original.features);
     }
 
     #[test]

@@ -28,8 +28,11 @@ impl BM25FHyperParams {
                 (DocumentField::Extension, 0.25),
                 (DocumentField::Content, 1.0),
                 (DocumentField::Identifier, 3.0),
+                (DocumentField::Symbol, 4.0),
+                (DocumentField::Import, 2.0),
                 (DocumentField::Comment, 0.8),
                 (DocumentField::StringLiteral, 0.8),
+                (DocumentField::Frontmatter, 1.2),
             ]),
         }
     }
@@ -47,6 +50,9 @@ impl BM25FHyperParams {
                 DocumentField::Extension => 1.4,
                 DocumentField::Content => 0.45,
                 DocumentField::Identifier
+                | DocumentField::Symbol
+                | DocumentField::Import
+                | DocumentField::Frontmatter
                 | DocumentField::Comment
                 | DocumentField::StringLiteral => 0.6,
             },
@@ -54,32 +60,41 @@ impl BM25FHyperParams {
                 DocumentField::FileName => 1.15,
                 DocumentField::RelativePath => 1.1,
                 DocumentField::Identifier => 1.7,
+                DocumentField::Symbol => 1.8,
+                DocumentField::Import => 1.1,
                 DocumentField::Content => 0.75,
                 DocumentField::Extension
                 | DocumentField::Comment
-                | DocumentField::StringLiteral => 0.8,
+                | DocumentField::StringLiteral
+                | DocumentField::Frontmatter => 0.8,
             },
             QueryIntent::ErrorMessage => match field {
                 DocumentField::StringLiteral => 2.0,
                 DocumentField::Content => 1.25,
+                DocumentField::Symbol => 1.1,
                 DocumentField::Comment => 0.9,
                 DocumentField::FileName
                 | DocumentField::RelativePath
                 | DocumentField::Extension
-                | DocumentField::Identifier => 0.7,
+                | DocumentField::Identifier
+                | DocumentField::Import
+                | DocumentField::Frontmatter => 0.7,
             },
             QueryIntent::Config => match field {
                 DocumentField::FileName => 1.5,
                 DocumentField::RelativePath => 1.8,
                 DocumentField::Extension => 1.7,
                 DocumentField::Identifier => 1.25,
+                DocumentField::Frontmatter => 1.8,
                 DocumentField::Content => 0.9,
+                DocumentField::Symbol | DocumentField::Import => 1.0,
                 DocumentField::Comment | DocumentField::StringLiteral => 0.8,
             },
             QueryIntent::NaturalLanguage => match field {
                 DocumentField::Content => 1.1,
                 DocumentField::Comment => 1.35,
-                DocumentField::Identifier => 0.9,
+                DocumentField::Frontmatter => 1.2,
+                DocumentField::Identifier | DocumentField::Symbol | DocumentField::Import => 0.9,
                 DocumentField::FileName
                 | DocumentField::RelativePath
                 | DocumentField::Extension

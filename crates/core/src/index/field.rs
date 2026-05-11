@@ -11,19 +11,25 @@ pub enum DocumentField {
     Extension,
     Content,
     Identifier,
+    Symbol,
+    Import,
     Comment,
     StringLiteral,
+    Frontmatter,
 }
 
 impl DocumentField {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 10] = [
         Self::FileName,
         Self::RelativePath,
         Self::Extension,
         Self::Content,
         Self::Identifier,
+        Self::Symbol,
+        Self::Import,
         Self::Comment,
         Self::StringLiteral,
+        Self::Frontmatter,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -33,8 +39,11 @@ impl DocumentField {
             Self::Extension => "extension",
             Self::Content => "content",
             Self::Identifier => "identifiers",
+            Self::Symbol => "symbols",
+            Self::Import => "imports",
             Self::Comment => "comments",
             Self::StringLiteral => "string_literals",
+            Self::Frontmatter => "frontmatter",
         }
     }
 
@@ -45,8 +54,11 @@ impl DocumentField {
             Self::Extension => AnalyzerField::Extension,
             Self::Content => AnalyzerField::Content,
             Self::Identifier => AnalyzerField::Identifier,
+            Self::Symbol => AnalyzerField::Symbol,
+            Self::Import => AnalyzerField::Import,
             Self::Comment => AnalyzerField::Comment,
             Self::StringLiteral => AnalyzerField::StringLiteral,
+            Self::Frontmatter => AnalyzerField::Frontmatter,
         }
     }
 }

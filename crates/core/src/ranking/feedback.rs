@@ -145,8 +145,13 @@ fn high_signal_field(field: DocumentField) -> f64 {
         DocumentField::FileName => 0.28,
         DocumentField::RelativePath => 0.20,
         DocumentField::Identifier => 0.22,
+        DocumentField::Symbol => 0.24,
+        DocumentField::Import => 0.14,
         DocumentField::StringLiteral => 0.12,
-        DocumentField::Extension | DocumentField::Content | DocumentField::Comment => 0.0,
+        DocumentField::Extension
+        | DocumentField::Content
+        | DocumentField::Comment
+        | DocumentField::Frontmatter => 0.0,
     }
 }
 
