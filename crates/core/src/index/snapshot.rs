@@ -105,7 +105,7 @@ pub fn write_snapshot(
     };
     let snapshot = IndexSnapshot::from_index(index, metadata.clone());
     let path = snapshot_path(index_dir);
-    let json = serde_json::to_vec_pretty(&snapshot).map_err(|source| SnapshotError::Json {
+    let json = serde_json::to_vec(&snapshot).map_err(|source| SnapshotError::Json {
         path: path.clone(),
         source,
     })?;
@@ -250,6 +250,8 @@ mod tests {
             Some(source.path()),
         );
         write_snapshot(&index, index_dir.path(), source.path(), &config).unwrap();
+        let json = fs::read_to_string(snapshot_path(index_dir.path())).unwrap();
+        assert!(!json.contains('\n'));
 
         let loaded = load_snapshot(index_dir.path(), source.path(), &config).unwrap();
         let query = AnalyzedQuery::new("rust search", &config);
@@ -311,7 +313,7 @@ pub fn bm25_score() {
         write_snapshot(&index, index_dir.path(), source.path(), &config).unwrap();
 
         let mut json = fs::read_to_string(snapshot_path(index_dir.path())).unwrap();
-        json = json.replace("\"schema_version\": 1", "\"schema_version\": 99");
+        json = json.replace("\"schema_version\":1", "\"schema_version\":99");
         fs::write(snapshot_path(index_dir.path()), json).unwrap();
 
         assert!(matches!(
