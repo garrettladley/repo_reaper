@@ -1117,6 +1117,68 @@ impl Scorer for BM25 {
         );
     }
 
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn fielded_index_populates_supported_language_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "pkg/search.py",
+            "import os\n# python comment\nclass Searcher:\n    def run_query(self):\n        return \"py literal\"\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.ts",
+            "import { thing } from './thing';\n// ts comment\ninterface Searcher { runQuery(): string }\nconst label = \"ts literal\";\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.js",
+            "import thing from './thing';\n// js comment\nclass Searcher { runQuery() { return \"js literal\"; } }\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "pkg/search.go",
+            "package pkg\nimport \"fmt\"\n// go comment\ntype Searcher struct {}\nfunc (s Searcher) RunQuery() string { return \"go literal\" }\n",
+        );
+        write_temp_file(
+            dir.path(),
+            "README.md",
+            "---\ntitle: code search\n---\n# Search Guide\n\n```rust\nfn example() {}\n```\n",
+        );
+        write_temp_file(dir.path(), "config.toml", "name = \"fallback\"");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+
+        for path in [
+            "pkg/search.py",
+            "pkg/search.ts",
+            "pkg/search.js",
+            "pkg/search.go",
+        ] {
+            let doc_id = index.doc_id(Path::new(path)).unwrap();
+            let metadata = index.document(doc_id).unwrap();
+
+            assert!(metadata.field_length(DocumentField::Symbol) > 0, "{path}");
+            assert!(metadata.field_length(DocumentField::Import) > 0, "{path}");
+            assert!(metadata.field_length(DocumentField::Comment) > 0, "{path}");
+            assert!(
+                metadata.field_length(DocumentField::StringLiteral) > 0,
+                "{path}"
+            );
+        }
+
+        let markdown_id = index.doc_id(Path::new("README.md")).unwrap();
+        let markdown = index.document(markdown_id).unwrap();
+        assert!(markdown.field_length(DocumentField::Symbol) > 0);
+        assert!(markdown.field_length(DocumentField::Frontmatter) > 0);
+
+        let toml_id = index.doc_id(Path::new("config.toml")).unwrap();
+        let toml = index.document(toml_id).unwrap();
+        assert_eq!(toml.field_length(DocumentField::Symbol), 0);
+        assert!(toml.field_length(DocumentField::Content) > 0);
+    }
+
     #[test]
     fn new_without_drop_prefix_uses_full_paths() {
         let dir = tempfile::tempdir().unwrap();
