@@ -1,7 +1,8 @@
 use std::{
     collections::HashMap,
+    env,
     fs::OpenOptions,
-    io::Write,
+    io::{IsTerminal, Write},
     path::PathBuf,
     sync::{Arc, Mutex},
     thread,
@@ -19,10 +20,10 @@ use repo_reaper_core::{
         FileSystemIndexCorpus, InvertedIndex, SearchEngine,
         event_log::{IndexEvent, append_event, clear_events, read_events, replay_events},
         inverted_file::InvertedFileLayout,
-        snapshot::{load_snapshot, write_snapshot},
+        snapshot::{load_snapshot, snapshot_path, write_snapshot},
     },
     query::{AnalyzedQuery, QueryExpansionConfig},
-    ranking::{RankingAlgo, Scored},
+    ranking::{RankingAlgo, Score, Scored},
     tokenizer::n_gram_transform,
 };
 
@@ -101,31 +102,74 @@ fn prepare_ranked_search(
     verbose: bool,
 ) -> Result<PreparedRankedSearch> {
     let transformer = build_transformer(Arc::clone(&config));
+    let ui = TerminalUi::new();
 
     if verbose {
-        println!("Indexing files in {}", directory.display());
+        ui.status("index", &format!("{} preparing", directory.display()));
     }
 
     let fielded = algo.needs_fielded_index();
     let index = if let Some(index_dir) = options.index_dir.as_ref().filter(|_| !options.reindex) {
-        match load_snapshot(index_dir, directory, &config) {
-            Ok(mut index) => {
-                let events = read_events(index_dir).context("failed to read index event log")?;
-                replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
-                index
+        let path = snapshot_path(index_dir);
+        if path.exists() {
+            match load_snapshot(index_dir, directory, &config) {
+                Ok(mut index) => {
+                    let events =
+                        read_events(index_dir).context("failed to read index event log")?;
+                    let event_count = events.len();
+                    replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
+                    if verbose {
+                        ui.status(
+                            "cache",
+                            &format!(
+                                "{} loaded{}",
+                                index_dir.display(),
+                                if event_count == 0 {
+                                    String::new()
+                                } else {
+                                    format!(" + {event_count} pending updates")
+                                }
+                            ),
+                        );
+                    }
+                    index
+                }
+                Err(error) => {
+                    if verbose {
+                        ui.status(
+                            "cache",
+                            &format!("{} snapshot unusable; rebuilding", index_dir.display()),
+                        );
+                        ui.detail(&error.to_string());
+                    }
+                    build_index(
+                        directory,
+                        &config,
+                        transformer.as_ref(),
+                        fielded,
+                        options.respect_gitignore,
+                    )
+                }
             }
-            Err(error) => {
-                eprintln!("rebuilding index because snapshot could not be loaded: {error}");
-                build_index(
-                    directory,
-                    &config,
-                    transformer.as_ref(),
-                    fielded,
-                    options.respect_gitignore,
-                )
+        } else {
+            if verbose {
+                ui.status(
+                    "cache",
+                    &format!("{} no snapshot yet; building", index_dir.display()),
+                );
             }
+            build_index(
+                directory,
+                &config,
+                transformer.as_ref(),
+                fielded,
+                options.respect_gitignore,
+            )
         }
     } else {
+        if verbose && options.reindex {
+            ui.status("cache", "reindex requested; rebuilding");
+        }
         build_index(
             directory,
             &config,
@@ -136,6 +180,7 @@ fn prepare_ranked_search(
     };
 
     let engine = SearchEngine::new(index);
+    let document_count = engine.num_docs()?;
 
     if let Some(index_dir) = &options.index_dir {
         engine.with_read(|index| {
@@ -147,7 +192,7 @@ fn prepare_ranked_search(
     }
 
     if verbose {
-        println!("Successfully indexed {} files", engine.num_docs()?);
+        ui.status("ready", &format!("{document_count} files indexed"));
     }
 
     Ok(PreparedRankedSearch { engine, fielded })
@@ -269,16 +314,27 @@ fn run_repl(
     query_expansion: bool,
     feedback_expansion: bool,
 ) -> Result<()> {
+    let ui = TerminalUi::new();
+
     loop {
-        println!("Enter a query: ");
+        ui.prompt()?;
 
         let mut query = String::new();
-        std::io::stdin()
+        let bytes_read = std::io::stdin()
             .read_line(&mut query)
             .context("failed to read from stdin")?;
-
-        if query.trim() == "exit" {
+        if bytes_read == 0 {
+            ui.notice("bye");
             break;
+        }
+
+        let trimmed_query = query.trim();
+        if matches!(trimmed_query, "exit" | "quit") {
+            break;
+        }
+        if trimmed_query.is_empty() {
+            println!();
+            continue;
         }
 
         let query = analyze_query(&config, &algo, &query, query_expansion, feedback_expansion);
@@ -288,11 +344,13 @@ fn run_repl(
 
         match ranking {
             Some(ranking) => {
-                for rank in &ranking.0 {
-                    println!("{rank}");
-                }
+                print_results(&ranking, &ui);
+                println!();
             }
-            None => println!("No results found :("),
+            None => {
+                ui.notice("no results found");
+                println!();
+            }
         }
     }
 
@@ -336,13 +394,104 @@ fn search_ranked(
 }
 
 fn print_one_shot_results(ranking: &Option<Scored>) {
+    let ui = TerminalUi::new();
+
     match ranking {
-        Some(ranking) => {
-            for score in &ranking.0 {
-                println!("{}\tscore={:.6}", score.doc_path.display(), score.score);
-            }
+        Some(ranking) => print_results(ranking, &ui),
+        None => ui.notice("no results found"),
+    }
+}
+
+fn print_results(ranking: &Scored, ui: &TerminalUi) {
+    for score in &ranking.0 {
+        println!("{}", ui.format_score(score));
+    }
+}
+
+struct TerminalUi {
+    stdout_color: bool,
+    stderr_color: bool,
+}
+
+impl TerminalUi {
+    fn new() -> Self {
+        let color_allowed = env::var_os("NO_COLOR").is_none();
+        Self {
+            stdout_color: color_allowed && std::io::stdout().is_terminal(),
+            stderr_color: color_allowed && std::io::stderr().is_terminal(),
         }
-        None => println!("No results found"),
+    }
+
+    fn status(&self, label: &str, message: &str) {
+        let style = if label == "ready" {
+            Style::GreenBold
+        } else {
+            Style::CyanBold
+        };
+        eprintln!(
+            "{} {}",
+            self.style_stderr(&format!("{label:<6}"), style),
+            message
+        );
+    }
+
+    fn notice(&self, message: &str) {
+        println!(
+            "{} {}",
+            self.style_stdout(&format!("{:<6}", "notice"), Style::YellowBold),
+            message
+        );
+    }
+
+    fn detail(&self, message: &str) {
+        eprintln!("       {}", self.style_stderr(message, Style::Dim));
+    }
+
+    fn prompt(&self) -> Result<()> {
+        print!("{} ", self.style_stdout("query>", Style::CyanBold));
+        std::io::stdout().flush().context("failed to flush prompt")
+    }
+
+    fn format_score(&self, score: &Score) -> String {
+        format!(
+            "{} {}",
+            self.style_stdout(&score.doc_path.display().to_string(), Style::Path),
+            self.style_stdout(&format!("score={:.6}", score.score), Style::Dim),
+        )
+    }
+
+    fn style_stdout(&self, text: &str, style: Style) -> String {
+        style.apply(text, self.stdout_color)
+    }
+
+    fn style_stderr(&self, text: &str, style: Style) -> String {
+        style.apply(text, self.stderr_color)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Style {
+    CyanBold,
+    GreenBold,
+    YellowBold,
+    Dim,
+    Path,
+}
+
+impl Style {
+    fn apply(self, text: &str, enabled: bool) -> String {
+        if !enabled {
+            return text.to_string();
+        }
+
+        let code = match self {
+            Style::CyanBold => "1;36",
+            Style::GreenBold => "1;32",
+            Style::YellowBold => "1;33",
+            Style::Dim => "2",
+            Style::Path => "36",
+        };
+        format!("\x1b[{code}m{text}\x1b[0m")
     }
 }
 
