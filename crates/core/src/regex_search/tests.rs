@@ -6,8 +6,8 @@ use std::{
 use regex::Regex;
 
 use super::{
-    CorpusDocument, RegexCandidatePlan, RegexCorpus, RegexSearchEngine, Trigram, TrigramIndex,
-    trigrams,
+    CorpusDocument, MmapRegexPostings, RegexCandidatePlan, RegexCorpus, RegexSearchEngine, Trigram,
+    TrigramIndex, trigrams,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -528,6 +528,60 @@ fn removing_document_prevents_deleted_file_from_leaking_candidates() {
 }
 
 #[test]
+fn mmap_postings_round_trip_lookup_matches_in_memory_postings() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("first.rs", "abcdef"),
+        ("second.rs", "zabczz"),
+        ("third.rs", "uvwxyz"),
+    ]));
+    let temp = tempfile::tempdir().unwrap();
+
+    index.write_mmap_postings(temp.path()).unwrap();
+    let postings = MmapRegexPostings::open(temp.path()).unwrap();
+    let mmap_doc_ids = postings.postings(&Trigram::from("abc")).unwrap().unwrap();
+
+    assert_eq!(
+        mmap_doc_ids,
+        index.postings(&Trigram::from("abc")).unwrap().clone()
+    );
+    assert_eq!(postings.lookup_entry_count().unwrap(), 11);
+    assert!(postings.mapped_bytes() > 0);
+}
+
+#[test]
+fn mmap_postings_drive_same_candidate_plan_as_memory_postings() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "xxabcdefyy"),
+        ("false_positive.rs", "abc bcd cde def"),
+        ("missing.rs", "abxde"),
+    ]));
+    let temp = tempfile::tempdir().unwrap();
+    let all_doc_ids = doc_ids_for_paths(&index, &["false_positive.rs", "match.rs", "missing.rs"]);
+    let plan = RegexCandidatePlan::for_pattern("abcdef");
+    let memory_candidates = index.candidates_for_regex_plan(&plan);
+
+    index.write_mmap_postings(temp.path()).unwrap();
+    let postings = MmapRegexPostings::open(temp.path()).unwrap();
+    let mmap_candidates = postings
+        .planned_candidates_for_regex_plan(&plan, &all_doc_ids)
+        .unwrap()
+        .candidates;
+
+    assert_eq!(mmap_candidates, memory_candidates);
+}
+
+#[test]
+fn mmap_postings_report_missing_trigram_without_full_deserialization() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[("a.rs", "abcdef")]));
+    let temp = tempfile::tempdir().unwrap();
+
+    index.write_mmap_postings(temp.path()).unwrap();
+    let postings = MmapRegexPostings::open(temp.path()).unwrap();
+
+    assert!(postings.postings(&Trigram::from("zzz")).unwrap().is_none());
+}
+
+#[test]
 fn unsupported_regex_constructs_fall_back_to_broader_candidates() {
     let index = TrigramIndex::with_corpus(TestCorpus::new(&[
         ("match.rs", "foo123bar"),
@@ -536,6 +590,15 @@ fn unsupported_regex_constructs_fall_back_to_broader_candidates() {
     let candidates = index.candidates_for_regex(r"foo\d+bar");
 
     assert!(candidates.contains(&index.doc_id(Path::new("match.rs")).unwrap()));
+}
+
+fn doc_ids_for_paths(index: &TrigramIndex<TestCorpus>, paths: &[&str]) -> Vec<crate::index::DocId> {
+    let mut doc_ids = paths
+        .iter()
+        .map(|path| index.doc_id(Path::new(path)).unwrap())
+        .collect::<Vec<_>>();
+    doc_ids.sort();
+    doc_ids
 }
 
 fn write_file(root: &Path, path: &str, content: &str) -> std::io::Result<()> {

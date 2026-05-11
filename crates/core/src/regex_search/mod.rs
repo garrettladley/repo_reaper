@@ -1,4 +1,5 @@
 mod corpus;
+mod disk_postings;
 mod engine;
 mod planner;
 mod regex_query;
@@ -8,12 +9,13 @@ mod types;
 use std::ops::{Range, RangeInclusive};
 
 pub use corpus::{CorpusDocument, FileSystemCorpus, RegexCorpus};
+pub use disk_postings::MmapRegexPostings;
 pub use engine::RegexSearchEngine;
 pub use regex_query::RegexCandidatePlan;
 pub use trigram_index::{TrigramIndex, trigrams};
 pub use types::{
-    LiteralSearchResult, RegexCandidateDiagnostics, RegexCandidateSelection, RegexSearchError,
-    RegexSearchMatch, Trigram,
+    LiteralSearchResult, RegexCandidateDiagnostics, RegexCandidateSelection, RegexPostingsError,
+    RegexSearchError, RegexSearchMatch, Trigram,
 };
 
 pub(crate) fn line_range_for_match(

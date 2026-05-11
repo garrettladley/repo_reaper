@@ -7,6 +7,10 @@ use std::{
 pub struct DocId(u32);
 
 impl DocId {
+    pub fn from_u32(value: u32) -> Self {
+        Self(value)
+    }
+
     pub fn as_u32(self) -> u32 {
         self.0
     }
