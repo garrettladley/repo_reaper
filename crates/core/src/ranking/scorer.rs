@@ -61,35 +61,44 @@ pub trait Scorer: Send + Sync {
 
 impl RankingAlgorithm for RankingAlgo {
     fn score(&self, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored {
-        let scorer: Box<dyn Scorer> = match self {
-            RankingAlgo::CosineSimilarity => Box::new(CosineSimilarity),
-            RankingAlgo::BM25(hyper_params) => Box::new(BM25 {
-                hyper_params: hyper_params.to_owned(),
-            }),
-            RankingAlgo::TFIDF => Box::new(TFIDF),
-        };
-
-        let scores = DashMap::new();
-
-        query.terms().par_bridge().for_each(|(term, query_term)| {
-            if let Some(documents) = inverted_index.get_postings(term) {
-                scorer.score(inverted_index, query, term, *query_term, documents, &scores)
-            }
-        });
-
-        Scored(
-            scores
-                .iter()
-                .par_bridge()
-                .filter_map(|score| {
-                    inverted_index.document(*score.key()).map(|metadata| Score {
-                        doc_path: metadata.path.clone(),
-                        score: *score.value(),
-                    })
-                })
-                .collect(),
-        )
+        match self {
+            RankingAlgo::CosineSimilarity => score_with(CosineSimilarity, inverted_index, query),
+            RankingAlgo::BM25(hyper_params) => score_with(
+                BM25 {
+                    hyper_params: hyper_params.clone(),
+                },
+                inverted_index,
+                query,
+            ),
+            RankingAlgo::TFIDF => score_with(TFIDF, inverted_index, query),
+        }
     }
+}
+
+fn score_with<S>(scorer: S, inverted_index: &InvertedIndex, query: &AnalyzedQuery) -> Scored
+where
+    S: Scorer,
+{
+    let scores = DashMap::new();
+
+    query.terms().par_bridge().for_each(|(term, query_term)| {
+        if let Some(documents) = inverted_index.get_postings(term) {
+            scorer.score(inverted_index, query, term, *query_term, documents, &scores)
+        }
+    });
+
+    Scored(
+        scores
+            .iter()
+            .par_bridge()
+            .filter_map(|score| {
+                inverted_index.document(*score.key()).map(|metadata| Score {
+                    doc_path: metadata.path.clone(),
+                    score: *score.value(),
+                })
+            })
+            .collect(),
+    )
 }
 
 impl RankingAlgo {
