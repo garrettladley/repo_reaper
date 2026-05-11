@@ -59,6 +59,12 @@ struct Args {
     /// Print corpus statistics for the indexed directory and exit
     #[clap(long, default_value = "false")]
     stats: bool,
+    /// Directory for ranked index snapshots and update event logs
+    #[clap(long)]
+    index_dir: Option<PathBuf>,
+    /// Rebuild the ranked index even when a compatible snapshot exists
+    #[clap(long, default_value = "false")]
+    reindex: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -99,7 +105,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    live_search::run(args.directory, config, args.ranking_algorithm, args.top_n)
+    live_search::run(
+        args.directory,
+        config,
+        args.ranking_algorithm,
+        args.top_n,
+        args.index_dir,
+        args.reindex,
+    )
 }
 
 fn print_directory_stats(directory: &Path, config: &ReaperConfig) {

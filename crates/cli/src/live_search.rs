@@ -7,15 +7,23 @@ use std::{
     thread,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use chrono::Utc;
 use notify::{
     Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
     event::{ModifyKind, RemoveKind},
 };
 use repo_reaper_core::{
-    config::Config as ReaperConfig, index::InvertedIndex, query::AnalyzedQuery,
-    ranking::RankingAlgo, tokenizer::n_gram_transform,
+    config::Config as ReaperConfig,
+    index::{
+        InvertedIndex, SearchEngine,
+        event_log::{IndexEvent, append_event, clear_events, read_events, replay_events},
+        inverted_file::InvertedFileLayout,
+        snapshot::{load_snapshot, write_snapshot},
+    },
+    query::AnalyzedQuery,
+    ranking::RankingAlgo,
+    tokenizer::n_gram_transform,
 };
 
 pub(crate) fn run(
@@ -23,6 +31,8 @@ pub(crate) fn run(
     config: Arc<ReaperConfig>,
     algo: RankingAlgo,
     top_n: usize,
+    index_dir: Option<PathBuf>,
+    reindex: bool,
 ) -> Result<()> {
     let config_clone = Arc::clone(&config);
     let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
@@ -30,45 +40,69 @@ pub(crate) fn run(
 
     println!("Indexing files in {}", directory.display());
 
-    let inverted_index = if algo.needs_fielded_index() {
-        Arc::new(Mutex::new(InvertedIndex::new_fielded(
-            directory, &config, None,
-        )))
+    let fielded = algo.needs_fielded_index();
+    let index = if let Some(index_dir) = index_dir.as_ref().filter(|_| !reindex) {
+        match load_snapshot(index_dir, &directory, &config) {
+            Ok(mut index) => {
+                let events = read_events(index_dir).context("failed to read index event log")?;
+                replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
+                index
+            }
+            Err(error) => {
+                eprintln!("rebuilding index because snapshot could not be loaded: {error}");
+                build_index(&directory, &config, transformer.as_ref(), fielded)
+            }
+        }
     } else {
-        let transformer_clone = Arc::clone(&transformer);
-        Arc::new(Mutex::new(InvertedIndex::new(
-            directory,
-            transformer_clone.as_ref(),
-            None,
-        )))
+        build_index(&directory, &config, transformer.as_ref(), fielded)
     };
 
-    println!(
-        "Successfully indexed {} files",
-        inverted_index
-            .lock()
-            .map_err(|_| anyhow!("index lock poisoned"))?
-            .num_docs()
-    );
+    let engine = SearchEngine::new(index);
+
+    if let Some(index_dir) = &index_dir {
+        engine.with_read(|index| {
+            write_snapshot(index, index_dir, &directory, &config)?;
+            InvertedFileLayout::write(index, index_dir)?;
+            clear_events(index_dir)?;
+            Ok::<_, anyhow::Error>(())
+        })??;
+    }
+
+    println!("Successfully indexed {} files", engine.num_docs()?);
 
     spawn_watcher(
         path_clone,
-        Arc::clone(&inverted_index),
+        engine.clone(),
         transformer,
         Arc::clone(&config),
-        algo.needs_fielded_index(),
+        fielded,
+        index_dir,
     );
-    run_repl(config, algo, top_n, inverted_index)
+    run_repl(config, algo, top_n, engine)
+}
+
+fn build_index(
+    directory: &PathBuf,
+    config: &ReaperConfig,
+    transformer: &(impl Fn(&str) -> HashMap<repo_reaper_core::index::Term, u32> + Sync),
+    fielded: bool,
+) -> InvertedIndex {
+    if fielded {
+        InvertedIndex::new_fielded(directory, config, None)
+    } else {
+        InvertedIndex::new(directory, transformer, None)
+    }
 }
 
 fn spawn_watcher(
     path: PathBuf,
-    inverted_index: Arc<Mutex<InvertedIndex>>,
+    engine: SearchEngine,
     transformer: Arc<
         impl Fn(&str) -> HashMap<repo_reaper_core::index::Term, u32> + Send + Sync + 'static,
     >,
     config: Arc<ReaperConfig>,
     fielded: bool,
+    index_dir: Option<PathBuf>,
 ) {
     let (tx, rx) = std::sync::mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
@@ -100,26 +134,40 @@ fn spawn_watcher(
                 Ok(Ok(event)) => match event.kind {
                     EventKind::Modify(ModifyKind::Metadata(_)) => continue,
                     EventKind::Remove(RemoveKind::File | RemoveKind::Any) => {
-                        let Ok(mut index) = inverted_index.lock() else {
-                            eprintln!("watch error: index lock poisoned");
-                            return;
-                        };
-
                         for path in &event.paths {
-                            index.remove_document(path);
+                            let event = IndexEvent::FileDeleted { path: path.clone() };
+                            if let Some(index_dir) = &index_dir
+                                && let Err(error) = append_event(index_dir, &event)
+                            {
+                                eprintln!("watch error: failed to append index event: {error}");
+                                return;
+                            }
+                            if let Err(error) =
+                                engine.apply_event(&event, transformer.as_ref(), &config, fielded)
+                            {
+                                eprintln!("watch error: {error}");
+                                return;
+                            }
                         }
                     }
                     _ => {
-                        let Ok(mut index) = inverted_index.lock() else {
-                            eprintln!("watch error: index lock poisoned");
-                            return;
-                        };
-
                         for path in &event.paths {
-                            if fielded {
-                                index.update_fielded(path, &config);
+                            let event = if path.exists() {
+                                IndexEvent::FileModified { path: path.clone() }
                             } else {
-                                index.update(path, &transformer.as_ref());
+                                IndexEvent::FileDeleted { path: path.clone() }
+                            };
+                            if let Some(index_dir) = &index_dir
+                                && let Err(error) = append_event(index_dir, &event)
+                            {
+                                eprintln!("watch error: failed to append index event: {error}");
+                                return;
+                            }
+                            if let Err(error) =
+                                engine.apply_event(&event, transformer.as_ref(), &config, fielded)
+                            {
+                                eprintln!("watch error: {error}");
+                                return;
                             }
                         }
                     }
@@ -135,7 +183,7 @@ fn run_repl(
     config: Arc<ReaperConfig>,
     algo: RankingAlgo,
     top_n: usize,
-    inverted_index: Arc<Mutex<InvertedIndex>>,
+    engine: SearchEngine,
 ) -> Result<()> {
     loop {
         println!("Enter a query: ");
@@ -155,12 +203,7 @@ fn run_repl(
             AnalyzedQuery::new(&query, &config)
         };
 
-        let ranking = {
-            let index = inverted_index
-                .lock()
-                .map_err(|_| anyhow!("index lock poisoned"))?;
-            algo.rank(&index, &query, top_n)
-        };
+        let ranking = engine.search(&algo, &query, top_n)?;
 
         log_query(&query, &ranking, &algo, top_n)?;
 
