@@ -8,8 +8,8 @@ use crate::{
     query::{AnalyzedQuery, QueryTerm},
     ranking::{
         BM25, BM25F, BM25FHyperParams, BM25HyperParams, CosineSimilarity, FieldContribution,
-        ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations, TFIDF, TermExplanation,
-        get_configuration, idf,
+        ProximityConfig, ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations, TFIDF,
+        TermExplanation, get_configuration, idf,
     },
 };
 
@@ -45,6 +45,7 @@ pub enum RankingAlgo {
     CosineSimilarity,
     BM25(BM25HyperParams),
     BM25F(BM25FHyperParams),
+    BM25Proximity(BM25HyperParams, ProximityConfig),
     TFIDF,
 }
 
@@ -82,6 +83,26 @@ impl RankingAlgorithm for RankingAlgo {
                 inverted_index,
                 query,
             ),
+            RankingAlgo::BM25Proximity(hyper_params, config) => {
+                let mut scored = score_with(
+                    BM25 {
+                        hyper_params: hyper_params.clone(),
+                    },
+                    inverted_index,
+                    query,
+                );
+                for score in &mut scored.0 {
+                    if let Some(doc_id) = inverted_index.doc_id(&score.doc_path) {
+                        score.score += crate::ranking::proximity::positional_bonus(
+                            inverted_index,
+                            query,
+                            doc_id,
+                            config,
+                        );
+                    }
+                }
+                scored
+            }
             RankingAlgo::TFIDF => score_with(TFIDF, inverted_index, query),
         }
     }
@@ -126,7 +147,11 @@ impl RankingAlgo {
 
         let mut ranking = self.score(inverted_index, query).0;
 
-        ranking.sort_by(|a, b| b.score.total_cmp(&a.score));
+        ranking.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| a.doc_path.cmp(&b.doc_path))
+        });
         ranking.truncate(top_n);
 
         if ranking.is_empty() {
@@ -172,6 +197,9 @@ impl RankingAlgo {
             RankingAlgo::BM25F(hyper_params) => {
                 explain_bm25f(inverted_index, query, doc_id, hyper_params)
             }
+            RankingAlgo::BM25Proximity(hyper_params, _) => {
+                explain_bm25(inverted_index, query, doc_id, hyper_params)
+            }
             RankingAlgo::CosineSimilarity | RankingAlgo::TFIDF => {
                 explain_matched_terms(inverted_index, query, doc_id)
             }
@@ -181,7 +209,7 @@ impl RankingAlgo {
     }
 
     pub fn needs_fielded_index(&self) -> bool {
-        matches!(self, Self::BM25F(_))
+        matches!(self, Self::BM25F(_) | Self::BM25Proximity(_, _))
     }
 }
 
@@ -334,6 +362,15 @@ impl FromStr for RankingAlgo {
                 Ok(RankingAlgo::BM25(hyper_params))
             }
             "bm25f" => Ok(RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())),
+            "bm25-proximity" | "proximity" => {
+                let hyper_params =
+                    get_configuration().map_err(|e| format!("failed to load BM25 config: {e}"))?;
+
+                Ok(RankingAlgo::BM25Proximity(
+                    hyper_params,
+                    ProximityConfig::default(),
+                ))
+            }
             "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }
@@ -350,7 +387,7 @@ mod tests {
     use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
     use rust_stemmers::{Algorithm, Stemmer};
 
-    use super::{BM25HyperParams, RankingAlgo};
+    use super::{BM25HyperParams, ProximityConfig, RankingAlgo};
     use crate::{
         config::Config,
         index::{DocumentField, InvertedIndex, Term},
@@ -467,5 +504,73 @@ mod tests {
                 .any(|field| field.field == DocumentField::RelativePath)
         );
         assert_eq!(result.explanation.final_score, result.score.score);
+    }
+
+    #[test]
+    fn quoted_phrase_requires_adjacent_terms_in_one_field() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "phrase.rs", "// mean average precision");
+        write_temp_file(dir.path(), "split.rs", "// mean average\nfn precision() {}");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("\"mean average precision\"", &test_config());
+        let phrase = query.phrases().first().unwrap();
+
+        let phrase_doc = index.doc_id(Path::new("phrase.rs")).unwrap();
+        let split_doc = index.doc_id(Path::new("split.rs")).unwrap();
+
+        assert_eq!(
+            crate::ranking::proximity::phrase_match_count(&index, phrase_doc, phrase),
+            1
+        );
+        assert_eq!(
+            crate::ranking::proximity::phrase_match_count(&index, split_doc, phrase),
+            0
+        );
+    }
+
+    #[test]
+    fn proximity_score_promotes_near_terms_over_far_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "near.rs", "// alpha beta gamma");
+        write_temp_file(
+            dir.path(),
+            "far.rs",
+            "// alpha filler filler filler filler filler filler beta gamma",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("alpha gamma", &test_config());
+        let ranking = RankingAlgo::BM25Proximity(
+            BM25HyperParams { k1: 1.2, b: 0.75 },
+            ProximityConfig {
+                window: 4,
+                phrase_boost: 0.0,
+                proximity_boost: 10.0,
+            },
+        )
+        .rank(&index, &query, 2)
+        .unwrap()
+        .0;
+
+        assert_eq!(ranking[0].doc_path, PathBuf::from("near.rs"));
+    }
+
+    #[test]
+    fn phrase_matching_does_not_cross_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "alpha.rs", "// alpha");
+        write_temp_file(dir.path(), "beta.rs", "// beta");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let query = AnalyzedQuery::new_code_search("\"alpha beta\"", &test_config());
+        let phrase = query.phrases().first().unwrap();
+
+        for metadata in index.documents() {
+            assert_eq!(
+                crate::ranking::proximity::phrase_match_count(&index, metadata.id, phrase),
+                0
+            );
+        }
     }
 }

@@ -11,7 +11,7 @@ pub use corpus::{
 pub use document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry};
 pub use field::DocumentField;
 pub use inverted_index::{
-    CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, TermDocument,
+    CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, PositionList, TermDocument,
     TermFrequencySummary,
 };
 pub use term::Term;
