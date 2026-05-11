@@ -20,12 +20,20 @@ pub struct EvaluationData {
 
 impl EvaluationData {
     pub fn parse(raw: RawEvaluationData, config: &Config) -> Result<Self, EvalError> {
+        Self::parse_with_code_search(raw, config, false)
+    }
+
+    pub fn parse_with_code_search(
+        raw: RawEvaluationData,
+        config: &Config,
+        code_search_queries: bool,
+    ) -> Result<Self, EvalError> {
         let corpus = EvaluationCorpus::parse(raw.local_root, raw.repo, raw.repo_path, raw.commit)?;
 
         let examples: Result<Vec<_>, _> = raw
             .examples
             .into_par_iter()
-            .map(|example| Example::parse(example, config))
+            .map(|example| Example::parse(example, config, code_search_queries))
             .collect();
 
         Ok(EvaluationData {
@@ -85,15 +93,24 @@ pub struct Example {
 }
 
 impl Example {
-    pub fn parse(raw: RawExample, config: &Config) -> Result<Self, EvalError> {
+    pub fn parse(
+        raw: RawExample,
+        config: &Config,
+        code_search_query: bool,
+    ) -> Result<Self, EvalError> {
         let results: Result<Vec<_>, _> = raw
             .results
             .into_par_iter()
             .map(ResultData::try_from)
             .collect();
+        let query = if code_search_query {
+            AnalyzedQuery::new_code_search(&raw.query, config)
+        } else {
+            AnalyzedQuery::new(&raw.query, config)
+        };
 
         Ok(Example {
-            query: AnalyzedQuery::new(&raw.query, config),
+            query,
             narrative: raw.narrative,
             query_shape: raw.query_shape,
             results: results?,

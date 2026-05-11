@@ -3,6 +3,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::{index::DocumentField, tokenizer::FileType};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DocId(u32);
 
@@ -22,16 +24,42 @@ pub struct DocumentMetadata {
     pub path: PathBuf,
     pub token_length: usize,
     pub file_size_bytes: u64,
+    pub file_type: FileType,
+    pub field_lengths: HashMap<DocumentField, usize>,
 }
 
 impl DocumentMetadata {
     fn new(id: DocId, path: PathBuf, token_length: usize, file_size_bytes: u64) -> Self {
+        Self::new_with_fields(
+            id,
+            path,
+            token_length,
+            file_size_bytes,
+            FileType::UnknownText,
+            HashMap::new(),
+        )
+    }
+
+    fn new_with_fields(
+        id: DocId,
+        path: PathBuf,
+        token_length: usize,
+        file_size_bytes: u64,
+        file_type: FileType,
+        field_lengths: HashMap<DocumentField, usize>,
+    ) -> Self {
         Self {
             id,
             path,
             token_length,
             file_size_bytes,
+            file_type,
+            field_lengths,
         }
+    }
+
+    pub fn field_length(&self, field: DocumentField) -> usize {
+        self.field_lengths.get(&field).copied().unwrap_or(0)
     }
 }
 
@@ -50,6 +78,17 @@ pub trait DocumentCatalog {
         token_length: usize,
         file_size_bytes: u64,
     ) -> DocId;
+    fn insert_or_update_with_fields(
+        &mut self,
+        path: PathBuf,
+        token_length: usize,
+        file_size_bytes: u64,
+        file_type: FileType,
+        field_lengths: HashMap<DocumentField, usize>,
+    ) -> DocId {
+        let _ = (file_type, field_lengths);
+        self.insert_or_update(path, token_length, file_size_bytes)
+    }
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
     fn get(&self, id: DocId) -> Option<&DocumentMetadata>;
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata>;
@@ -58,6 +97,7 @@ pub trait DocumentCatalog {
     fn is_empty(&self) -> bool;
     fn total_token_length(&self) -> u64;
     fn avg_doc_length(&self) -> f64;
+    fn avg_field_length(&self, field: DocumentField) -> f64;
 }
 
 impl DocumentRegistry {
@@ -85,6 +125,46 @@ impl DocumentCatalog for DocumentRegistry {
         let id = DocId(self.next_id);
         self.next_id += 1;
         let metadata = DocumentMetadata::new(id, path, token_length, file_size_bytes);
+        self.path_to_id.insert(metadata.path.clone(), id);
+        self.total_token_length += token_length as u64;
+        self.documents.insert(id, metadata);
+        id
+    }
+
+    fn insert_or_update_with_fields(
+        &mut self,
+        path: PathBuf,
+        token_length: usize,
+        file_size_bytes: u64,
+        file_type: FileType,
+        field_lengths: HashMap<DocumentField, usize>,
+    ) -> DocId {
+        if let Some(&id) = self.path_to_id.get(&path) {
+            if let Some(existing) = self.documents.get_mut(&id) {
+                self.total_token_length -= existing.token_length as u64;
+                self.total_token_length += token_length as u64;
+                *existing = DocumentMetadata::new_with_fields(
+                    id,
+                    path,
+                    token_length,
+                    file_size_bytes,
+                    file_type,
+                    field_lengths,
+                );
+            }
+            return id;
+        }
+
+        let id = DocId(self.next_id);
+        self.next_id += 1;
+        let metadata = DocumentMetadata::new_with_fields(
+            id,
+            path,
+            token_length,
+            file_size_bytes,
+            file_type,
+            field_lengths,
+        );
         self.path_to_id.insert(metadata.path.clone(), id);
         self.total_token_length += token_length as u64;
         self.documents.insert(id, metadata);
@@ -130,6 +210,20 @@ impl DocumentCatalog for DocumentRegistry {
         }
 
         self.total_token_length as f64 / self.documents.len() as f64
+    }
+
+    fn avg_field_length(&self, field: DocumentField) -> f64 {
+        if self.documents.is_empty() {
+            return 0.0;
+        }
+
+        let total = self
+            .documents
+            .values()
+            .map(|metadata| metadata.field_length(field))
+            .sum::<usize>();
+
+        total as f64 / self.documents.len() as f64
     }
 }
 
