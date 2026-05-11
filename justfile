@@ -69,3 +69,8 @@ build:
 [group("dev")]
 bench:
     cargo bench -p repo-reaper-core --bench search_bench
+
+# compare ranked IR search against regex candidate/search paths
+[group("dev")]
+bench-search-comparison *ARGS:
+    cargo bench -p repo-reaper-core --bench search_bench -- search_comparison {{ARGS}}
