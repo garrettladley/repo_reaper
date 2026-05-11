@@ -5,8 +5,9 @@ use std::{
 };
 
 use super::{
-    FileSystemCorpus, LiteralSearchResult, RegexCandidatePlan, RegexCandidateSelection,
-    RegexCorpus, RegexSearchMatch, Trigram, line_range_for_match, planner,
+    FileSystemCorpus, LiteralSearchResult, MmapRegexPostings, RegexCandidatePlan,
+    RegexCandidateSelection, RegexCorpus, RegexPostingsError, RegexSearchMatch, Trigram,
+    line_range_for_match, planner,
 };
 use crate::index::{
     DocId,
@@ -134,6 +135,13 @@ where
         plan: &RegexCandidatePlan,
     ) -> RegexCandidateSelection {
         planner::plan_candidates(plan, &self.postings, &self.doc_ids_by_path)
+    }
+
+    pub fn write_mmap_postings(
+        &self,
+        directory: impl AsRef<Path>,
+    ) -> Result<(), RegexPostingsError> {
+        MmapRegexPostings::write(directory, &self.postings)
     }
 
     pub fn search_literal(&self, literal: &str) -> LiteralSearchResult {

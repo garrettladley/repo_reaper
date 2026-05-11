@@ -12,6 +12,16 @@ pub enum RegexSearchError {
     InvalidPattern(#[source] regex::Error),
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RegexPostingsError {
+    #[error("regex postings io failed")]
+    Io(#[from] std::io::Error),
+    #[error("invalid regex postings format")]
+    InvalidFormat,
+    #[error("regex postings file is too large")]
+    FileTooLarge,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegexSearchMatch {
     pub path: PathBuf,
