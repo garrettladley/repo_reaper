@@ -4,18 +4,42 @@ use std::{
 };
 
 use crate::{
+    config::Config,
     index::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
         document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+        field::DocumentField,
         term::Term,
     },
     ranking::idf,
+    tokenizer::{AnalyzerProfile, FileType},
 };
 
 #[derive(Debug)]
 pub struct TermDocument {
     pub length: usize,
     pub term_freq: usize,
+    pub field_frequencies: HashMap<DocumentField, usize>,
+    pub field_lengths: HashMap<DocumentField, usize>,
+}
+
+impl TermDocument {
+    pub fn unfielded(length: usize, term_freq: usize) -> Self {
+        Self {
+            length,
+            term_freq,
+            field_frequencies: HashMap::new(),
+            field_lengths: HashMap::new(),
+        }
+    }
+
+    pub fn field_term_freq(&self, field: DocumentField) -> usize {
+        self.field_frequencies.get(&field).copied().unwrap_or(0)
+    }
+
+    pub fn field_length(&self, field: DocumentField) -> usize {
+        self.field_lengths.get(&field).copied().unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,8 +87,11 @@ pub struct InvertedIndex<R = DocumentRegistry> {
 struct ProcessedDocument {
     path: PathBuf,
     term_frequencies: HashMap<Term, u32>,
+    field_term_frequencies: HashMap<DocumentField, HashMap<Term, u32>>,
+    field_lengths: HashMap<DocumentField, usize>,
     token_length: usize,
     file_size_bytes: u64,
+    file_type: FileType,
 }
 
 #[cfg(test)]
@@ -92,13 +119,10 @@ impl InvertedIndex<DocumentRegistry> {
                 documents.insert_or_update(PathBuf::from(path), total_len, file_size_bytes);
 
             for &(term, freq) in terms {
-                postings.entry(Term(term.to_string())).or_default().insert(
-                    doc_id,
-                    TermDocument {
-                        length: total_len,
-                        term_freq: freq as usize,
-                    },
-                );
+                postings
+                    .entry(Term(term.to_string()))
+                    .or_default()
+                    .insert(doc_id, TermDocument::unfielded(total_len, freq as usize));
             }
         }
 
@@ -155,6 +179,48 @@ impl InvertedIndex<DocumentRegistry> {
 
         IndexBuildResult { index, report }
     }
+
+    pub fn new_fielded<P>(root: P, config: &Config, drop_prefix: Option<P>) -> Self
+    where
+        P: AsRef<Path>,
+    {
+        Self::build_fielded(root, config, drop_prefix).index
+    }
+
+    pub fn build_fielded<P>(root: P, config: &Config, drop_prefix: Option<P>) -> IndexBuildResult
+    where
+        P: AsRef<Path>,
+    {
+        let corpus = FileSystemIndexCorpus::new(root, drop_prefix);
+        Self::from_corpus_fielded(&corpus, config)
+    }
+
+    pub fn from_corpus_fielded<C>(corpus: &C, config: &Config) -> IndexBuildResult
+    where
+        C: IndexCorpus,
+    {
+        let scan = corpus.scan();
+        let mut registry = DocumentRegistry::new();
+        let mut postings = HashMap::new();
+        for document in &scan.documents {
+            let document = Self::analyze_fielded_document(document, config);
+            Self::insert_processed_document(&mut registry, &mut postings, document);
+        }
+
+        let document_norms = Self::compute_document_norms(&postings, registry.len());
+
+        let index = Self {
+            postings,
+            documents: registry,
+            document_norms,
+        };
+        let report = IndexBuildReport {
+            indexed_document_count: scan.indexed_document_count(),
+            skipped_documents: scan.skipped_documents,
+        };
+
+        IndexBuildResult { index, report }
+    }
 }
 
 impl<R> InvertedIndex<R>
@@ -179,7 +245,13 @@ where
             transform_fn,
         );
         let mut registry = DocumentRegistry::new();
-        let doc_id = registry.insert_or_update(document.path.clone(), document.token_length, 0);
+        let doc_id = registry.insert_or_update_with_fields(
+            document.path.clone(),
+            document.token_length,
+            0,
+            document.file_type,
+            document.field_lengths.clone(),
+        );
         Self::postings_for_document(doc_id, &document)
     }
 
@@ -193,8 +265,57 @@ where
         ProcessedDocument {
             path: document.path.clone(),
             term_frequencies,
+            field_term_frequencies: HashMap::new(),
+            field_lengths: HashMap::new(),
             token_length,
             file_size_bytes: document.file_size_bytes,
+            file_type: FileType::UnknownText,
+        }
+    }
+
+    fn analyze_fielded_document(
+        document: &IndexCorpusDocument,
+        config: &Config,
+    ) -> ProcessedDocument {
+        let file_type = FileType::detect(&document.path);
+        let profile = AnalyzerProfile::for_file_type(file_type);
+        let raw_fields = raw_document_fields(&document.path, &document.content);
+        let mut field_term_frequencies = HashMap::new();
+        let mut field_lengths = HashMap::new();
+        let mut term_frequencies = HashMap::new();
+
+        for field in DocumentField::ALL {
+            let Some(raw_value) = raw_fields.get(&field) else {
+                continue;
+            };
+            let tokens = profile.analyze(field.analyzer_field(), raw_value, config);
+            if tokens.is_empty() {
+                continue;
+            }
+
+            let mut frequencies = HashMap::new();
+            for token in tokens {
+                *frequencies.entry(Term(token)).or_insert(0) += 1;
+            }
+
+            let field_length = frequencies.values().map(|&count| count as usize).sum();
+            field_lengths.insert(field, field_length);
+            for (term, frequency) in &frequencies {
+                *term_frequencies.entry(term.clone()).or_insert(0) += *frequency;
+            }
+            field_term_frequencies.insert(field, frequencies);
+        }
+
+        let token_length = term_frequencies.values().map(|&c| c as usize).sum();
+
+        ProcessedDocument {
+            path: document.path.clone(),
+            term_frequencies,
+            field_term_frequencies,
+            field_lengths,
+            token_length,
+            file_size_bytes: document.file_size_bytes,
+            file_type,
         }
     }
 
@@ -205,11 +326,22 @@ where
         let mut local_map: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
 
         for (term, freq) in &document.term_frequencies {
+            let field_frequencies = document
+                .field_term_frequencies
+                .iter()
+                .filter_map(|(field, frequencies)| {
+                    frequencies
+                        .get(term)
+                        .map(|frequency| (*field, *frequency as usize))
+                })
+                .collect::<HashMap<_, _>>();
             local_map.entry(term.clone()).or_default().insert(
                 doc_id,
                 TermDocument {
                     length: document.token_length,
                     term_freq: *freq as usize,
+                    field_frequencies,
+                    field_lengths: document.field_lengths.clone(),
                 },
             );
         }
@@ -222,10 +354,12 @@ where
         postings: &mut HashMap<Term, HashMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
-        let doc_id = registry.insert_or_update(
+        let doc_id = registry.insert_or_update_with_fields(
             document.path.clone(),
             document.token_length,
             document.file_size_bytes,
+            document.file_type,
+            document.field_lengths.clone(),
         );
 
         for (term, doc_map) in Self::postings_for_document(doc_id, &document) {
@@ -329,6 +463,31 @@ where
         }
     }
 
+    pub fn update_fielded(&mut self, path: &Path, config: &Config) {
+        if let Some(doc_id) = self.documents.doc_id(path) {
+            self.remove_postings_for_doc(doc_id);
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(content) => {
+                let document = Self::analyze_fielded_document(
+                    &IndexCorpusDocument {
+                        path: path.to_path_buf(),
+                        file_size_bytes: content.len() as u64,
+                        content,
+                    },
+                    config,
+                );
+                Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
+                self.rebuild_document_norms();
+            }
+            Err(_) => {
+                self.documents.remove(path);
+                self.rebuild_document_norms();
+            }
+        }
+    }
+
     pub fn remove_document(&mut self, path: &Path) {
         if let Some(metadata) = self.documents.remove(path) {
             self.remove_postings_for_doc(metadata.id);
@@ -370,17 +529,194 @@ where
     }
 }
 
+fn raw_document_fields(path: &Path, content: &str) -> HashMap<DocumentField, String> {
+    let mut fields = HashMap::new();
+
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        fields.insert(DocumentField::FileName, file_name.to_string());
+    }
+
+    fields.insert(
+        DocumentField::RelativePath,
+        path.to_string_lossy().into_owned(),
+    );
+
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        fields.insert(DocumentField::Extension, extension.to_string());
+    }
+
+    fields.insert(DocumentField::Content, content.to_string());
+    fields.insert(
+        DocumentField::Identifier,
+        extract_identifier_lexemes(content).join(" "),
+    );
+    fields.insert(DocumentField::Comment, extract_comments(content).join("\n"));
+    fields.insert(
+        DocumentField::StringLiteral,
+        extract_string_literals(content).join("\n"),
+    );
+
+    fields
+}
+
+fn extract_identifier_lexemes(content: &str) -> Vec<String> {
+    let mut identifiers = Vec::new();
+    let mut current = String::new();
+
+    for character in content.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' || character == '-' {
+            current.push(character);
+            continue;
+        }
+
+        if contains_identifier_signal(&current) {
+            identifiers.push(std::mem::take(&mut current));
+        } else {
+            current.clear();
+        }
+    }
+
+    if contains_identifier_signal(&current) {
+        identifiers.push(current);
+    }
+
+    identifiers
+}
+
+fn contains_identifier_signal(candidate: &str) -> bool {
+    let mut has_lower = false;
+    let mut has_upper = false;
+    let mut has_digit = false;
+
+    for character in candidate.chars() {
+        has_lower |= character.is_ascii_lowercase();
+        has_upper |= character.is_ascii_uppercase();
+        has_digit |= character.is_ascii_digit();
+
+        if character == '_' || character == '-' {
+            return true;
+        }
+    }
+
+    (has_lower && has_upper) || (has_digit && (has_lower || has_upper))
+}
+
+fn extract_comments(content: &str) -> Vec<String> {
+    let mut comments = Vec::new();
+    let mut in_block_comment = false;
+    let mut block_comment = String::new();
+
+    for line in content.lines() {
+        let mut rest = line;
+
+        loop {
+            if in_block_comment {
+                if let Some(end) = rest.find("*/") {
+                    block_comment.push_str(&rest[..end]);
+                    comments.push(std::mem::take(&mut block_comment));
+                    in_block_comment = false;
+                    rest = &rest[end + 2..];
+                    continue;
+                }
+
+                block_comment.push_str(rest);
+                block_comment.push('\n');
+                break;
+            }
+
+            let line_comment = rest.find("//");
+            let hash_comment = rest.find('#');
+            let block_start = rest.find("/*");
+            let comment_start = [line_comment, hash_comment, block_start]
+                .into_iter()
+                .flatten()
+                .min();
+
+            let Some(start) = comment_start else {
+                break;
+            };
+
+            if Some(start) == block_start {
+                rest = &rest[start + 2..];
+                if let Some(end) = rest.find("*/") {
+                    comments.push(rest[..end].to_string());
+                    rest = &rest[end + 2..];
+                    continue;
+                }
+
+                block_comment.push_str(rest);
+                block_comment.push('\n');
+                in_block_comment = true;
+                break;
+            }
+
+            comments.push(rest[start + 1..].to_string());
+            break;
+        }
+    }
+
+    if !block_comment.is_empty() {
+        comments.push(block_comment);
+    }
+
+    comments
+}
+
+fn extract_string_literals(content: &str) -> Vec<String> {
+    let mut literals = Vec::new();
+    let mut literal = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in content.chars() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                literal.push(character);
+                escaped = false;
+                continue;
+            }
+
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+
+            if character == active_quote {
+                literals.push(std::mem::take(&mut literal));
+                quote = None;
+                continue;
+            }
+
+            literal.push(character);
+            continue;
+        }
+
+        if matches!(character, '"' | '\'' | '`') {
+            quote = Some(character);
+        }
+    }
+
+    literals
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         path::{Path, PathBuf},
     };
 
+    use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+    use rust_stemmers::{Algorithm, Stemmer};
+
     use super::InvertedIndex;
     use crate::{
-        index::{DocId, IndexSkipReason, document_registry::DocumentRegistry, term::Term},
+        config::Config,
+        index::{
+            DocId, DocumentField, IndexSkipReason, document_registry::DocumentRegistry, term::Term,
+        },
         ranking::idf,
+        tokenizer::FileType,
     };
 
     type TestIndex = InvertedIndex<DocumentRegistry>;
@@ -586,6 +922,17 @@ mod tests {
             })
     }
 
+    fn test_config() -> Config {
+        Config {
+            n_grams: 1,
+            stemmer: Stemmer::create(Algorithm::English),
+            stop_words: stop_words::get(stop_words::LANGUAGE::English)
+                .par_iter()
+                .map(|word| word.to_string())
+                .collect::<HashSet<String>>(),
+        }
+    }
+
     #[test]
     fn new_with_drop_prefix_indexes_files_and_strips_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -624,6 +971,48 @@ mod tests {
 
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0], &PathBuf::from("a.txt"));
+    }
+
+    #[test]
+    fn fielded_index_tracks_file_type_and_field_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/inverted_index.rs",
+            "fn parse2Json() { // running parser\nlet value = \"query-id\"; }",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let doc_id = index.doc_id(Path::new("src/inverted_index.rs")).unwrap();
+        let metadata = index.document(doc_id).unwrap();
+
+        assert_eq!(metadata.file_type, FileType::Rust);
+        assert!(metadata.field_length(DocumentField::Content) > 0);
+        assert!(metadata.field_length(DocumentField::Identifier) > 0);
+        assert!(metadata.field_length(DocumentField::Comment) > 0);
+        assert!(metadata.field_length(DocumentField::StringLiteral) > 0);
+    }
+
+    #[test]
+    fn fielded_index_exposes_per_field_term_frequency() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/inverted_index.rs",
+            "fn unrelated() { let value = \"needle\"; }",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let doc_id = index.doc_id(Path::new("src/inverted_index.rs")).unwrap();
+        let term_doc = index
+            .get_postings(&Term("inverted_index".to_string()))
+            .unwrap()
+            .get(&doc_id)
+            .unwrap();
+
+        assert_eq!(term_doc.field_term_freq(DocumentField::FileName), 1);
+        assert_eq!(term_doc.field_term_freq(DocumentField::RelativePath), 1);
+        assert_eq!(term_doc.field_term_freq(DocumentField::Content), 0);
     }
 
     #[test]

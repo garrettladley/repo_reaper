@@ -5,7 +5,7 @@ use crate::{
     tokenizer::{content_tokens, tokenize_identifier},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum FileType {
     Rust,
     Python,
