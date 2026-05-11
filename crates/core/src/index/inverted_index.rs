@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
 
@@ -9,21 +9,24 @@ use crate::{
     index::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
         document_registry::{
-            DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry, FieldSpan,
+            DocId, DocumentCatalog, DocumentMetadata, DocumentMetadataUpdate, DocumentRegistry,
+            FieldSpan,
         },
         field::DocumentField,
+        quality::StaticQualitySignals,
         term::Term,
     },
     ranking::idf,
     tokenizer::{AnalyzerProfile, FileType},
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TermDocument {
     pub length: usize,
     pub term_freq: usize,
     pub field_frequencies: HashMap<DocumentField, usize>,
     pub field_lengths: HashMap<DocumentField, usize>,
+    pub field_positions: HashMap<DocumentField, PositionList>,
 }
 
 impl TermDocument {
@@ -33,6 +36,7 @@ impl TermDocument {
             term_freq,
             field_frequencies: HashMap::new(),
             field_lengths: HashMap::new(),
+            field_positions: HashMap::new(),
         }
     }
 
@@ -43,9 +47,52 @@ impl TermDocument {
     pub fn field_length(&self, field: DocumentField) -> usize {
         self.field_lengths.get(&field).copied().unwrap_or(0)
     }
+
+    pub fn field_positions(&self, field: DocumentField) -> Option<&PositionList> {
+        self.field_positions.get(&field)
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PositionList {
+    first: u32,
+    gaps: Vec<u32>,
+}
+
+impl PositionList {
+    pub fn from_positions(positions: &[u32]) -> Option<Self> {
+        let (&first, rest) = positions.split_first()?;
+        let gaps = rest
+            .iter()
+            .scan(first, |previous, &position| {
+                let gap = position - *previous;
+                *previous = position;
+                Some(gap)
+            })
+            .collect();
+
+        Some(Self { first, gaps })
+    }
+
+    pub fn positions(&self) -> Vec<u32> {
+        let mut positions = Vec::with_capacity(self.gaps.len() + 1);
+        positions.push(self.first);
+
+        let mut current = self.first;
+        for gap in &self.gaps {
+            current += gap;
+            positions.push(current);
+        }
+
+        positions
+    }
+
+    pub fn gaps(&self) -> &[u32] {
+        &self.gaps
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CorpusStats {
     pub document_count: usize,
     pub total_token_count: u64,
@@ -54,7 +101,7 @@ pub struct CorpusStats {
     pub high_frequency_terms: Vec<TermFrequencySummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TermFrequencySummary {
     pub term: String,
     pub collection_frequency: usize,
@@ -79,9 +126,9 @@ impl IndexBuildReport {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct InvertedIndex<R = DocumentRegistry> {
-    postings: HashMap<Term, HashMap<DocId, TermDocument>>,
+    postings: HashMap<Term, BTreeMap<DocId, TermDocument>>,
     documents: R,
     document_norms: HashMap<DocId, f64>,
 }
@@ -91,17 +138,37 @@ struct ProcessedDocument {
     path: PathBuf,
     term_frequencies: HashMap<Term, u32>,
     field_term_frequencies: HashMap<DocumentField, HashMap<Term, u32>>,
+    field_term_positions: HashMap<DocumentField, HashMap<Term, PositionList>>,
     field_lengths: HashMap<DocumentField, usize>,
     field_spans: Vec<FieldSpan>,
+    features: Vec<DocumentFeature>,
     token_length: usize,
     file_size_bytes: u64,
     file_type: FileType,
+    quality_signals: StaticQualitySignals,
 }
 
 #[cfg(test)]
 type TestDocumentSpec<'a> = (&'a str, &'a [(&'a str, u32)], u64);
 
 impl InvertedIndex<DocumentRegistry> {
+    pub fn from_parts(
+        postings: HashMap<Term, BTreeMap<DocId, TermDocument>>,
+        documents: DocumentRegistry,
+    ) -> Self {
+        let document_norms = Self::compute_document_norms(&postings, documents.len());
+
+        Self {
+            postings,
+            documents,
+            document_norms,
+        }
+    }
+
+    pub fn documents_iter(&self) -> impl Iterator<Item = (&DocId, &DocumentMetadata)> {
+        self.documents.documents_iter()
+    }
+
     #[cfg(test)]
     pub(crate) fn from_documents(docs: &[(&str, &[(&str, u32)])]) -> Self {
         Self::from_documents_with_sizes(
@@ -115,7 +182,7 @@ impl InvertedIndex<DocumentRegistry> {
     #[cfg(test)]
     pub(crate) fn from_documents_with_sizes(docs: &[TestDocumentSpec<'_>]) -> Self {
         let mut documents = DocumentRegistry::new();
-        let mut postings: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
+        let mut postings: HashMap<Term, BTreeMap<DocId, TermDocument>> = HashMap::new();
 
         for &(path, terms, file_size_bytes) in docs {
             let total_len: usize = terms.iter().map(|(_, c)| *c as usize).sum();
@@ -236,7 +303,7 @@ where
         entry_path: &Path,
         content: &str,
         transform_fn: &F,
-    ) -> HashMap<Term, HashMap<DocId, TermDocument>>
+    ) -> HashMap<Term, BTreeMap<DocId, TermDocument>>
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
@@ -255,6 +322,7 @@ where
             0,
             document.file_type,
             document.field_lengths.clone(),
+            document.quality_signals.clone(),
         );
         Self::postings_for_document(doc_id, &document)
     }
@@ -270,11 +338,18 @@ where
             path: document.path.clone(),
             term_frequencies,
             field_term_frequencies: HashMap::new(),
+            field_term_positions: HashMap::new(),
             field_lengths: HashMap::new(),
             field_spans: Vec::new(),
+            features: Vec::new(),
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type: FileType::UnknownText,
+            quality_signals: StaticQualitySignals::analyze(
+                &document.path,
+                &document.content,
+                document.file_size_bytes,
+            ),
         }
     }
 
@@ -286,6 +361,7 @@ where
         let profile = AnalyzerProfile::for_file_type(file_type);
         let raw_fields = raw_document_fields(&document.path, &document.content);
         let mut field_term_frequencies = HashMap::new();
+        let mut field_term_positions = HashMap::new();
         let mut field_lengths = HashMap::new();
         let mut term_frequencies = HashMap::new();
 
@@ -298,9 +374,17 @@ where
                 continue;
             }
 
+            let mut positions: HashMap<Term, Vec<u32>> = HashMap::new();
+            for (position, token) in tokens.iter().enumerate() {
+                positions
+                    .entry(Term(token.clone()))
+                    .or_default()
+                    .push(position as u32);
+            }
+
             let mut frequencies = HashMap::new();
-            for token in tokens {
-                *frequencies.entry(Term(token)).or_insert(0) += 1;
+            for (term, term_positions) in &positions {
+                frequencies.insert(term.clone(), term_positions.len() as u32);
             }
 
             let field_length = frequencies.values().map(|&count| count as usize).sum();
@@ -308,6 +392,15 @@ where
             for (term, frequency) in &frequencies {
                 *term_frequencies.entry(term.clone()).or_insert(0) += *frequency;
             }
+            field_term_positions.insert(
+                field,
+                positions
+                    .into_iter()
+                    .filter_map(|(term, positions)| {
+                        PositionList::from_positions(&positions).map(|list| (term, list))
+                    })
+                    .collect(),
+            );
             field_term_frequencies.insert(field, frequencies);
         }
 
@@ -317,19 +410,26 @@ where
             path: document.path.clone(),
             term_frequencies,
             field_term_frequencies,
+            field_term_positions,
             field_lengths,
             field_spans: raw_fields.spans,
+            features: raw_fields.features,
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type,
+            quality_signals: StaticQualitySignals::analyze(
+                &document.path,
+                &document.content,
+                document.file_size_bytes,
+            ),
         }
     }
 
     fn postings_for_document(
         doc_id: DocId,
         document: &ProcessedDocument,
-    ) -> HashMap<Term, HashMap<DocId, TermDocument>> {
-        let mut local_map: HashMap<Term, HashMap<DocId, TermDocument>> = HashMap::new();
+    ) -> HashMap<Term, BTreeMap<DocId, TermDocument>> {
+        let mut local_map: HashMap<Term, BTreeMap<DocId, TermDocument>> = HashMap::new();
 
         for (term, freq) in &document.term_frequencies {
             let field_frequencies = document
@@ -341,6 +441,15 @@ where
                         .map(|frequency| (*field, *frequency as usize))
                 })
                 .collect::<HashMap<_, _>>();
+            let field_positions = document
+                .field_term_positions
+                .iter()
+                .filter_map(|(field, positions)| {
+                    positions
+                        .get(term)
+                        .map(|positions| (*field, positions.clone()))
+                })
+                .collect::<HashMap<_, _>>();
             local_map.entry(term.clone()).or_default().insert(
                 doc_id,
                 TermDocument {
@@ -348,6 +457,7 @@ where
                     term_freq: *freq as usize,
                     field_frequencies,
                     field_lengths: document.field_lengths.clone(),
+                    field_positions,
                 },
             );
         }
@@ -357,28 +467,30 @@ where
 
     fn insert_processed_document(
         registry: &mut impl DocumentCatalog,
-        postings: &mut HashMap<Term, HashMap<DocId, TermDocument>>,
+        postings: &mut HashMap<Term, BTreeMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
-        let doc_id = registry.insert_or_update_with_field_spans(
-            document.path.clone(),
-            document.token_length,
-            document.file_size_bytes,
-            document.file_type,
-            document.field_lengths.clone(),
-            document.field_spans.clone(),
-        );
+        let doc_id = registry.insert_or_update_with_features(DocumentMetadataUpdate {
+            path: document.path.clone(),
+            token_length: document.token_length,
+            file_size_bytes: document.file_size_bytes,
+            file_type: document.file_type,
+            field_lengths: document.field_lengths.clone(),
+            field_spans: document.field_spans.clone(),
+            features: document.features.clone(),
+            quality_signals: document.quality_signals.clone(),
+        });
 
         for (term, doc_map) in Self::postings_for_document(doc_id, &document) {
             postings.entry(term).or_default().extend(doc_map);
         }
     }
 
-    pub fn get_postings(&self, term: &Term) -> Option<&HashMap<DocId, TermDocument>> {
+    pub fn get_postings(&self, term: &Term) -> Option<&BTreeMap<DocId, TermDocument>> {
         self.postings.get(term)
     }
 
-    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &HashMap<DocId, TermDocument>)> {
+    pub fn postings_iter(&self) -> impl Iterator<Item = (&Term, &BTreeMap<DocId, TermDocument>)> {
         self.postings.iter()
     }
 
@@ -432,12 +544,30 @@ where
         }
     }
 
+    pub fn total_token_count(&self) -> u64 {
+        self.documents.total_token_length()
+    }
+
+    pub fn vocabulary_size(&self) -> usize {
+        self.postings.len()
+    }
+
+    pub fn collection_frequency(&self, term: &Term) -> usize {
+        self.postings.get(term).map_or(0, |documents| {
+            documents.values().map(|doc| doc.term_freq).sum()
+        })
+    }
+
     pub fn doc_id(&self, path: &Path) -> Option<DocId> {
         self.documents.doc_id(path)
     }
 
     pub fn document(&self, id: DocId) -> Option<&DocumentMetadata> {
         self.documents.get(id)
+    }
+
+    pub fn documents(&self) -> impl Iterator<Item = &DocumentMetadata> {
+        self.documents.iter()
     }
 
     pub fn doc_freq(&self, term: &Term) -> usize {
@@ -518,7 +648,7 @@ where
     }
 
     fn compute_document_norms(
-        postings: &HashMap<Term, HashMap<DocId, TermDocument>>,
+        postings: &HashMap<Term, BTreeMap<DocId, TermDocument>>,
         num_docs: usize,
     ) -> HashMap<DocId, f64> {
         let mut squared_weights = HashMap::new();
@@ -544,6 +674,7 @@ where
 struct RawDocumentFields {
     values: HashMap<DocumentField, String>,
     spans: Vec<FieldSpan>,
+    features: Vec<DocumentFeature>,
 }
 
 fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
@@ -569,9 +700,23 @@ fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
                 end_byte: span.end,
             });
         }
+        if is_exportable_code_feature(feature.field) {
+            fields.features.push(feature.clone());
+        }
     }
 
     fields
+}
+
+fn is_exportable_code_feature(field: DocumentField) -> bool {
+    matches!(
+        field,
+        DocumentField::Symbol
+            | DocumentField::Import
+            | DocumentField::Comment
+            | DocumentField::StringLiteral
+            | DocumentField::Frontmatter
+    )
 }
 
 fn document_features(path: &Path, content: &str, file_type: FileType) -> DocumentFeatures {
@@ -782,7 +927,7 @@ fn extract_string_literals(content: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet},
         path::{Path, PathBuf},
     };
 
@@ -809,7 +954,7 @@ mod tests {
     }
 
     fn get_term_doc<'a>(
-        result: &'a HashMap<Term, HashMap<DocId, super::TermDocument>>,
+        result: &'a HashMap<Term, BTreeMap<DocId, super::TermDocument>>,
         term: &str,
         doc_id: DocId,
     ) -> &'a super::TermDocument {
@@ -1198,6 +1343,79 @@ impl Scorer for BM25 {
         let toml = index.document(toml_id).unwrap();
         assert_eq!(toml.field_length(DocumentField::Symbol), 0);
         assert!(toml.field_length(DocumentField::Content) > 0);
+    }
+
+    #[test]
+    fn fielded_index_stores_positions_per_field_and_as_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/metrics.rs",
+            "// alpha beta gamma\nfn alpha_beta_gamma() {}",
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let doc_id = index.doc_id(Path::new("src/metrics.rs")).unwrap();
+        let alpha = index
+            .get_postings(&Term("alpha".to_string()))
+            .unwrap()
+            .get(&doc_id)
+            .unwrap();
+
+        let content_positions = alpha
+            .field_positions(DocumentField::Content)
+            .unwrap()
+            .positions();
+        let comment_positions = alpha
+            .field_positions(DocumentField::Comment)
+            .unwrap()
+            .positions();
+        let identifier_positions = alpha
+            .field_positions(DocumentField::Identifier)
+            .unwrap()
+            .positions();
+
+        assert_ne!(content_positions, comment_positions);
+        assert_eq!(comment_positions, vec![0]);
+        assert_eq!(identifier_positions, vec![2]);
+        assert_eq!(
+            alpha
+                .field_positions(DocumentField::Content)
+                .unwrap()
+                .gaps(),
+            &[6]
+        );
+    }
+
+    #[test]
+    fn fielded_positions_are_document_local() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "near.rs", "// alpha beta");
+        write_temp_file(dir.path(), "far.rs", "// alpha gap beta");
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let near_doc = index.doc_id(Path::new("near.rs")).unwrap();
+        let far_doc = index.doc_id(Path::new("far.rs")).unwrap();
+        let alpha_docs = index.get_postings(&Term("alpha".to_string())).unwrap();
+
+        assert_eq!(
+            alpha_docs
+                .get(&near_doc)
+                .unwrap()
+                .field_positions(DocumentField::Comment)
+                .unwrap()
+                .positions(),
+            vec![0]
+        );
+        assert_eq!(
+            alpha_docs
+                .get(&far_doc)
+                .unwrap()
+                .field_positions(DocumentField::Comment)
+                .unwrap()
+                .positions(),
+            vec![0]
+        );
     }
 
     #[test]

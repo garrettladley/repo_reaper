@@ -3,9 +3,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{index::DocumentField, tokenizer::FileType};
+use crate::{
+    code_intelligence::DocumentFeature,
+    index::{DocumentField, StaticQualitySignals},
+    tokenizer::FileType,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DocId(u32);
 
 impl DocId {
@@ -18,14 +24,42 @@ impl DocId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FieldSpan {
     pub field: DocumentField,
     pub start_byte: usize,
     pub end_byte: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DocumentMetadataUpdate {
+    pub path: PathBuf,
+    pub token_length: usize,
+    pub file_size_bytes: u64,
+    pub file_type: FileType,
+    pub field_lengths: HashMap<DocumentField, usize>,
+    pub field_spans: Vec<FieldSpan>,
+    pub features: Vec<DocumentFeature>,
+    pub quality_signals: StaticQualitySignals,
+}
+
+impl DocumentMetadataUpdate {
+    fn unknown_text(path: PathBuf, token_length: usize, file_size_bytes: u64) -> Self {
+        let quality_signals = StaticQualitySignals::analyze(&path, "", file_size_bytes);
+        Self {
+            path,
+            token_length,
+            file_size_bytes,
+            file_type: FileType::UnknownText,
+            field_lengths: HashMap::new(),
+            field_spans: Vec::new(),
+            features: Vec::new(),
+            quality_signals,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DocumentMetadata {
     pub id: DocId,
     pub path: PathBuf,
@@ -33,39 +67,39 @@ pub struct DocumentMetadata {
     pub file_size_bytes: u64,
     pub file_type: FileType,
     pub field_lengths: HashMap<DocumentField, usize>,
+    #[serde(default)]
     pub field_spans: Vec<FieldSpan>,
+    #[serde(default)]
+    pub features: Vec<DocumentFeature>,
+    #[serde(default)]
+    pub quality_signals: StaticQualitySignals,
 }
 
 impl DocumentMetadata {
-    fn new(id: DocId, path: PathBuf, token_length: usize, file_size_bytes: u64) -> Self {
-        Self::new_with_fields(
-            id,
-            path,
-            token_length,
-            file_size_bytes,
-            FileType::UnknownText,
-            HashMap::new(),
-            Vec::new(),
-        )
-    }
-
-    fn new_with_fields(
-        id: DocId,
-        path: PathBuf,
-        token_length: usize,
-        file_size_bytes: u64,
-        file_type: FileType,
-        field_lengths: HashMap<DocumentField, usize>,
-        field_spans: Vec<FieldSpan>,
-    ) -> Self {
+    fn from_update(id: DocId, update: DocumentMetadataUpdate) -> Self {
         Self {
             id,
-            path,
-            token_length,
-            file_size_bytes,
-            file_type,
-            field_lengths,
-            field_spans,
+            path: update.path,
+            token_length: update.token_length,
+            file_size_bytes: update.file_size_bytes,
+            file_type: update.file_type,
+            field_lengths: update.field_lengths,
+            field_spans: update.field_spans,
+            features: update.features,
+            quality_signals: update.quality_signals,
+        }
+    }
+
+    pub fn into_update(self) -> DocumentMetadataUpdate {
+        DocumentMetadataUpdate {
+            path: self.path,
+            token_length: self.token_length,
+            file_size_bytes: self.file_size_bytes,
+            file_type: self.file_type,
+            field_lengths: self.field_lengths,
+            field_spans: self.field_spans,
+            features: self.features,
+            quality_signals: self.quality_signals,
         }
     }
 
@@ -74,7 +108,7 @@ impl DocumentMetadata {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct DocumentRegistry {
     documents: HashMap<DocId, DocumentMetadata>,
     path_to_id: HashMap<PathBuf, DocId>,
@@ -83,12 +117,21 @@ pub struct DocumentRegistry {
 }
 
 pub trait DocumentCatalog {
+    fn insert_or_update_record(&mut self, update: DocumentMetadataUpdate) -> DocId;
+
     fn insert_or_update(
         &mut self,
         path: PathBuf,
         token_length: usize,
         file_size_bytes: u64,
-    ) -> DocId;
+    ) -> DocId {
+        self.insert_or_update_record(DocumentMetadataUpdate::unknown_text(
+            path,
+            token_length,
+            file_size_bytes,
+        ))
+    }
+
     fn insert_or_update_with_fields(
         &mut self,
         path: PathBuf,
@@ -96,24 +139,27 @@ pub trait DocumentCatalog {
         file_size_bytes: u64,
         file_type: FileType,
         field_lengths: HashMap<DocumentField, usize>,
+        quality_signals: StaticQualitySignals,
     ) -> DocId {
-        let _ = (file_type, field_lengths);
-        self.insert_or_update(path, token_length, file_size_bytes)
+        self.insert_or_update_record(DocumentMetadataUpdate {
+            path,
+            token_length,
+            file_size_bytes,
+            file_type,
+            field_lengths,
+            field_spans: Vec::new(),
+            features: Vec::new(),
+            quality_signals,
+        })
     }
-    fn insert_or_update_with_field_spans(
-        &mut self,
-        path: PathBuf,
-        token_length: usize,
-        file_size_bytes: u64,
-        file_type: FileType,
-        field_lengths: HashMap<DocumentField, usize>,
-        field_spans: Vec<FieldSpan>,
-    ) -> DocId {
-        let _ = (file_type, field_lengths, field_spans);
-        self.insert_or_update(path, token_length, file_size_bytes)
+
+    fn insert_or_update_with_features(&mut self, update: DocumentMetadataUpdate) -> DocId {
+        self.insert_or_update_record(update)
     }
+
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
     fn get(&self, id: DocId) -> Option<&DocumentMetadata>;
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_>;
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata>;
     fn doc_id(&self, path: &Path) -> Option<DocId>;
     fn len(&self) -> usize;
@@ -127,114 +173,28 @@ impl DocumentRegistry {
     pub fn new() -> Self {
         Self::default()
     }
+
+    pub fn documents_iter(&self) -> impl Iterator<Item = (&DocId, &DocumentMetadata)> {
+        self.documents.iter()
+    }
 }
 
 impl DocumentCatalog for DocumentRegistry {
-    fn insert_or_update(
-        &mut self,
-        path: PathBuf,
-        token_length: usize,
-        file_size_bytes: u64,
-    ) -> DocId {
-        if let Some(&id) = self.path_to_id.get(&path) {
+    fn insert_or_update_record(&mut self, update: DocumentMetadataUpdate) -> DocId {
+        if let Some(&id) = self.path_to_id.get(&update.path) {
             if let Some(existing) = self.documents.get_mut(&id) {
                 self.total_token_length -= existing.token_length as u64;
-                self.total_token_length += token_length as u64;
-                *existing = DocumentMetadata::new(id, path, token_length, file_size_bytes);
+                self.total_token_length += update.token_length as u64;
+                *existing = DocumentMetadata::from_update(id, update);
             }
             return id;
         }
 
         let id = DocId(self.next_id);
         self.next_id += 1;
-        let metadata = DocumentMetadata::new(id, path, token_length, file_size_bytes);
+        let metadata = DocumentMetadata::from_update(id, update);
         self.path_to_id.insert(metadata.path.clone(), id);
-        self.total_token_length += token_length as u64;
-        self.documents.insert(id, metadata);
-        id
-    }
-
-    fn insert_or_update_with_fields(
-        &mut self,
-        path: PathBuf,
-        token_length: usize,
-        file_size_bytes: u64,
-        file_type: FileType,
-        field_lengths: HashMap<DocumentField, usize>,
-    ) -> DocId {
-        if let Some(&id) = self.path_to_id.get(&path) {
-            if let Some(existing) = self.documents.get_mut(&id) {
-                self.total_token_length -= existing.token_length as u64;
-                self.total_token_length += token_length as u64;
-                *existing = DocumentMetadata::new_with_fields(
-                    id,
-                    path,
-                    token_length,
-                    file_size_bytes,
-                    file_type,
-                    field_lengths,
-                    Vec::new(),
-                );
-            }
-            return id;
-        }
-
-        let id = DocId(self.next_id);
-        self.next_id += 1;
-        let metadata = DocumentMetadata::new_with_fields(
-            id,
-            path,
-            token_length,
-            file_size_bytes,
-            file_type,
-            field_lengths,
-            Vec::new(),
-        );
-        self.path_to_id.insert(metadata.path.clone(), id);
-        self.total_token_length += token_length as u64;
-        self.documents.insert(id, metadata);
-        id
-    }
-
-    fn insert_or_update_with_field_spans(
-        &mut self,
-        path: PathBuf,
-        token_length: usize,
-        file_size_bytes: u64,
-        file_type: FileType,
-        field_lengths: HashMap<DocumentField, usize>,
-        field_spans: Vec<FieldSpan>,
-    ) -> DocId {
-        if let Some(&id) = self.path_to_id.get(&path) {
-            if let Some(existing) = self.documents.get_mut(&id) {
-                self.total_token_length -= existing.token_length as u64;
-                self.total_token_length += token_length as u64;
-                *existing = DocumentMetadata::new_with_fields(
-                    id,
-                    path,
-                    token_length,
-                    file_size_bytes,
-                    file_type,
-                    field_lengths,
-                    field_spans,
-                );
-            }
-            return id;
-        }
-
-        let id = DocId(self.next_id);
-        self.next_id += 1;
-        let metadata = DocumentMetadata::new_with_fields(
-            id,
-            path,
-            token_length,
-            file_size_bytes,
-            file_type,
-            field_lengths,
-            field_spans,
-        );
-        self.path_to_id.insert(metadata.path.clone(), id);
-        self.total_token_length += token_length as u64;
+        self.total_token_length += metadata.token_length as u64;
         self.documents.insert(id, metadata);
         id
     }
@@ -248,6 +208,10 @@ impl DocumentCatalog for DocumentRegistry {
 
     fn get(&self, id: DocId) -> Option<&DocumentMetadata> {
         self.documents.get(&id)
+    }
+
+    fn iter(&self) -> Box<dyn Iterator<Item = &DocumentMetadata> + '_> {
+        Box::new(self.documents.values())
     }
 
     fn get_by_path(&self, path: &Path) -> Option<&DocumentMetadata> {
@@ -297,9 +261,14 @@ impl DocumentCatalog for DocumentRegistry {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::HashMap, path::PathBuf};
 
-    use super::{DocumentCatalog, DocumentRegistry};
+    use super::{DocumentCatalog, DocumentMetadataUpdate, DocumentRegistry, FieldSpan};
+    use crate::{
+        code_intelligence::{ByteSpan, DocumentFeature},
+        index::{DocumentField, StaticQualitySignals},
+        tokenizer::FileType,
+    };
 
     #[test]
     fn insert_assigns_compact_document_ids() {
@@ -325,6 +294,37 @@ mod tests {
         assert_eq!(metadata.token_length, 7);
         assert_eq!(metadata.file_size_bytes, 30);
         assert_eq!(registry.avg_doc_length(), 7.0);
+    }
+
+    #[test]
+    fn insert_record_preserves_exportable_features() {
+        let mut registry = DocumentRegistry::new();
+        let path = PathBuf::from("a.rs");
+        let feature = DocumentFeature {
+            field: DocumentField::Symbol,
+            text: "score_bm25".to_string(),
+            span: Some(ByteSpan { start: 3, end: 13 }),
+        };
+        let span = FieldSpan {
+            field: DocumentField::Symbol,
+            start_byte: 3,
+            end_byte: 13,
+        };
+
+        registry.insert_or_update_with_features(DocumentMetadataUpdate {
+            path: path.clone(),
+            token_length: 7,
+            file_size_bytes: 30,
+            file_type: FileType::Rust,
+            field_lengths: HashMap::new(),
+            field_spans: vec![span.clone()],
+            features: vec![feature.clone()],
+            quality_signals: StaticQualitySignals::default(),
+        });
+
+        let metadata = registry.get_by_path(&path).unwrap();
+        assert_eq!(metadata.field_spans, vec![span]);
+        assert_eq!(metadata.features, vec![feature]);
     }
 
     #[test]

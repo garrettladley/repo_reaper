@@ -2,7 +2,11 @@ use std::path::PathBuf;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::{config::Config, error::EvalError, query::AnalyzedQuery};
+use crate::{
+    config::Config,
+    error::EvalError,
+    query::{AnalyzedQuery, QueryExpansionConfig},
+};
 
 #[derive(serde::Deserialize, Debug)]
 pub struct RawEvaluationData {
@@ -28,12 +32,26 @@ impl EvaluationData {
         config: &Config,
         code_search_queries: bool,
     ) -> Result<Self, EvalError> {
+        Self::parse_with_options(
+            raw,
+            config,
+            code_search_queries,
+            QueryExpansionConfig::default(),
+        )
+    }
+
+    pub fn parse_with_options(
+        raw: RawEvaluationData,
+        config: &Config,
+        code_search_queries: bool,
+        expansion: QueryExpansionConfig,
+    ) -> Result<Self, EvalError> {
         let corpus = EvaluationCorpus::parse(raw.local_root, raw.repo, raw.repo_path, raw.commit)?;
 
         let examples: Result<Vec<_>, _> = raw
             .examples
             .into_par_iter()
-            .map(|example| Example::parse(example, config, code_search_queries))
+            .map(|example| Example::parse(example, config, code_search_queries, expansion))
             .collect();
 
         Ok(EvaluationData {
@@ -97,6 +115,7 @@ impl Example {
         raw: RawExample,
         config: &Config,
         code_search_query: bool,
+        expansion: QueryExpansionConfig,
     ) -> Result<Self, EvalError> {
         let results: Result<Vec<_>, _> = raw
             .results
@@ -104,7 +123,7 @@ impl Example {
             .map(ResultData::try_from)
             .collect();
         let query = if code_search_query {
-            AnalyzedQuery::new_code_search(&raw.query, config)
+            AnalyzedQuery::new_code_search_with_expansion(&raw.query, config, expansion)
         } else {
             AnalyzedQuery::new(&raw.query, config)
         };

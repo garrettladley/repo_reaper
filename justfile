@@ -60,6 +60,11 @@ eval-smoke:
 eval-smoke-bm25f:
     cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10 --fresh --ranking-algorithm bm25f
 
+# run the checked-in repo-native evaluation smoke set with query likelihood ranking
+[group("dev")]
+eval-smoke-ql:
+    cargo run -p repo-reaper-cli -- --evaluate --eval-data ./data/eval/repo_reaper.json --eval-format pretty --top-n 10 --fresh --ranking-algorithm ql-dirichlet
+
 # compare the checked-in repo-native evaluation set against a saved JSON baseline
 [group("dev")]
 eval-compare baseline:

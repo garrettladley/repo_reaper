@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use dashmap::DashMap;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
     error::RankingError,
-    index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
-    query::{AnalyzedQuery, QueryTerm},
+    index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
+    query::{AnalyzedQuery, QueryIntent, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
 
@@ -40,6 +40,70 @@ impl BM25FHyperParams {
     pub fn field_weight(&self, field: DocumentField) -> f64 {
         self.field_weights.get(&field).copied().unwrap_or(1.0)
     }
+
+    pub fn intent_field_weight(&self, field: DocumentField, intent: QueryIntent) -> f64 {
+        let base = self.field_weight(field);
+        let multiplier = match intent {
+            QueryIntent::Path => match field {
+                DocumentField::FileName => 1.5,
+                DocumentField::RelativePath => 2.2,
+                DocumentField::Extension => 1.4,
+                DocumentField::Content => 0.45,
+                DocumentField::Identifier
+                | DocumentField::Symbol
+                | DocumentField::Import
+                | DocumentField::Frontmatter
+                | DocumentField::Comment
+                | DocumentField::StringLiteral => 0.6,
+            },
+            QueryIntent::Identifier => match field {
+                DocumentField::FileName => 1.15,
+                DocumentField::RelativePath => 1.1,
+                DocumentField::Identifier => 1.7,
+                DocumentField::Symbol => 1.8,
+                DocumentField::Import => 1.1,
+                DocumentField::Content => 0.75,
+                DocumentField::Extension
+                | DocumentField::Comment
+                | DocumentField::StringLiteral
+                | DocumentField::Frontmatter => 0.8,
+            },
+            QueryIntent::ErrorMessage => match field {
+                DocumentField::StringLiteral => 2.0,
+                DocumentField::Content => 1.25,
+                DocumentField::Symbol => 1.1,
+                DocumentField::Comment => 0.9,
+                DocumentField::FileName
+                | DocumentField::RelativePath
+                | DocumentField::Extension
+                | DocumentField::Identifier
+                | DocumentField::Import
+                | DocumentField::Frontmatter => 0.7,
+            },
+            QueryIntent::Config => match field {
+                DocumentField::FileName => 1.5,
+                DocumentField::RelativePath => 1.8,
+                DocumentField::Extension => 1.7,
+                DocumentField::Identifier => 1.25,
+                DocumentField::Frontmatter => 1.8,
+                DocumentField::Content => 0.9,
+                DocumentField::Symbol | DocumentField::Import => 1.0,
+                DocumentField::Comment | DocumentField::StringLiteral => 0.8,
+            },
+            QueryIntent::NaturalLanguage => match field {
+                DocumentField::Content => 1.1,
+                DocumentField::Comment => 1.35,
+                DocumentField::Frontmatter => 1.2,
+                DocumentField::Identifier | DocumentField::Symbol | DocumentField::Import => 0.9,
+                DocumentField::FileName
+                | DocumentField::RelativePath
+                | DocumentField::Extension
+                | DocumentField::StringLiteral => 0.8,
+            },
+        };
+
+        base * multiplier
+    }
 }
 
 pub fn get_configuration() -> Result<BM25FHyperParams, RankingError> {
@@ -51,11 +115,15 @@ pub struct BM25F {
 }
 
 impl BM25F {
-    pub fn weighted_term_frequency(
+    pub fn weighted_term_frequency<I>(
         &self,
-        inverted_index: &InvertedIndex,
+        index: &I,
         term_doc: &TermDocument,
-    ) -> f64 {
+        intent: QueryIntent,
+    ) -> f64
+    where
+        I: RankedIndexReader,
+    {
         if term_doc.field_frequencies.is_empty() {
             return term_doc.term_freq as f64;
         }
@@ -69,7 +137,7 @@ impl BM25F {
                 }
 
                 let field_length = term_doc.field_length(field) as f64;
-                let avg_field_length = inverted_index.avg_field_length(field);
+                let avg_field_length = index.avg_field_length(field);
                 if avg_field_length == 0.0 {
                     return 0.0;
                 }
@@ -77,7 +145,7 @@ impl BM25F {
                 let normalized_tf = tf
                     / (1.0 - self.hyper_params.b
                         + self.hyper_params.b * field_length / avg_field_length);
-                self.hyper_params.field_weight(field) * normalized_tf
+                self.hyper_params.intent_field_weight(field, intent) * normalized_tf
             })
             .sum()
     }
@@ -93,24 +161,30 @@ impl BM25F {
 }
 
 impl Scorer for BM25F {
-    fn score(
+    fn score<I, P>(
         &self,
-        inverted_index: &InvertedIndex,
-        _: &AnalyzedQuery,
+        index: &I,
+        query: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
-        documents: &HashMap<DocId, TermDocument>,
+        documents: &P,
         scores: &DashMap<DocId, f64>,
-    ) {
-        let num_docs = inverted_index.num_docs();
+    ) where
+        I: RankedIndexReader + Sync,
+        P: PostingList + Sync,
+    {
+        let num_docs = index.num_docs();
         let idf = idf(num_docs, documents.len());
 
-        documents.par_iter().for_each(|(doc_id, term_doc)| {
-            let weighted_tf = self.weighted_term_frequency(inverted_index, term_doc);
-            let score = self.score_weighted_tf(query_term.weight, idf, weighted_tf);
+        documents
+            .iter()
+            .par_bridge()
+            .for_each(|(doc_id, term_doc)| {
+                let weighted_tf = self.weighted_term_frequency(index, term_doc, query.intent());
+                let score = self.score_weighted_tf(query_term.weight, idf, weighted_tf);
 
-            *scores.entry(*doc_id).or_insert(0.0) += score;
-        });
+                *scores.entry(doc_id).or_insert(0.0) += score;
+            });
     }
 }
 
@@ -128,7 +202,7 @@ mod tests {
     use crate::{
         config::Config,
         index::InvertedIndex,
-        query::AnalyzedQuery,
+        query::{AnalyzedQuery, QueryIntent},
         ranking::{BM25HyperParams, RankingAlgo},
     };
 
@@ -202,7 +276,7 @@ mod tests {
         let weighted_tf = BM25F {
             hyper_params: BM25FHyperParams::code_search_defaults(),
         }
-        .weighted_term_frequency(&index, term_doc);
+        .weighted_term_frequency(&index, term_doc, QueryIntent::Identifier);
 
         assert!(weighted_tf > term_doc.term_freq as f64);
     }
