@@ -1,4 +1,4 @@
-use std::{path::Path, str::Utf8Error};
+use std::{path::Path, str::Utf8Error, sync::LazyLock};
 
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
@@ -16,10 +16,10 @@ pub enum CodeIntelligenceError {
     },
     #[error("failed to parse {file_type:?} source")]
     Parse { file_type: FileType },
-    #[error("failed to compile {file_type:?} tree-sitter query: {source}")]
+    #[error("failed to compile {file_type:?} tree-sitter query: {message}")]
     Query {
         file_type: FileType,
-        source: tree_sitter::QueryError,
+        message: String,
     },
     #[error("tree-sitter captured invalid utf-8 for {file_type:?}: {source}")]
     CaptureText {
@@ -27,6 +27,67 @@ pub enum CodeIntelligenceError {
         source: Utf8Error,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct QueryCompileError {
+    file_type: FileType,
+    message: String,
+}
+
+macro_rules! static_language_query {
+    ($name:ident, $file_type:expr, $language:expr, $query_path:literal) => {
+        static $name: LazyLock<Result<Query, QueryCompileError>> = LazyLock::new(|| {
+            let language: Language = $language.into();
+            Query::new(&language, include_str!($query_path)).map_err(|source| QueryCompileError {
+                file_type: $file_type,
+                message: source.to_string(),
+            })
+        });
+    };
+}
+
+static_language_query!(
+    RUST_QUERY,
+    FileType::Rust,
+    tree_sitter_rust::LANGUAGE,
+    "queries/rust.scm"
+);
+static_language_query!(
+    PYTHON_QUERY,
+    FileType::Python,
+    tree_sitter_python::LANGUAGE,
+    "queries/python.scm"
+);
+static_language_query!(
+    JAVASCRIPT_QUERY,
+    FileType::JavaScript,
+    tree_sitter_javascript::LANGUAGE,
+    "queries/javascript.scm"
+);
+static_language_query!(
+    TYPESCRIPT_QUERY,
+    FileType::TypeScript,
+    tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+    "queries/typescript.scm"
+);
+static_language_query!(
+    TSX_QUERY,
+    FileType::TypeScript,
+    tree_sitter_typescript::LANGUAGE_TSX,
+    "queries/typescript.scm"
+);
+static_language_query!(
+    GO_QUERY,
+    FileType::Go,
+    tree_sitter_go::LANGUAGE,
+    "queries/go.scm"
+);
+static_language_query!(
+    MARKDOWN_QUERY,
+    FileType::Markdown,
+    tree_sitter_md_025::LANGUAGE,
+    "queries/markdown.scm"
+);
 
 pub fn extract(
     file_type: FileType,
@@ -36,8 +97,9 @@ pub fn extract(
     let Some(language) = language_for(file_type, path) else {
         return Ok(None);
     };
-    let query_source =
-        query_source_for(file_type).ok_or(CodeIntelligenceError::UnsupportedLanguage(file_type))?;
+    let Some(query) = query_for(file_type, path)? else {
+        return Ok(None);
+    };
     let mut parser = Parser::new();
     parser
         .set_language(&language)
@@ -46,8 +108,7 @@ pub fn extract(
     let Some(tree) = parser.parse(content, None) else {
         return Err(CodeIntelligenceError::Parse { file_type });
     };
-    let query = compile_query(file_type, &language, query_source)?;
-    let mut fields = query_fields(file_type, &query, tree.root_node(), content.as_bytes())?;
+    let mut fields = query_fields(file_type, query, tree.root_node(), content.as_bytes())?;
 
     if file_type == FileType::Markdown {
         fields.extend(markdown_frontmatter(content));
@@ -57,21 +118,8 @@ pub fn extract(
 }
 
 pub fn compile_language_query(file_type: FileType) -> Result<(), CodeIntelligenceError> {
-    let Some(language) = language_for(file_type, Path::new("")) else {
-        return Ok(());
-    };
-    let query_source =
-        query_source_for(file_type).ok_or(CodeIntelligenceError::UnsupportedLanguage(file_type))?;
-    compile_query(file_type, &language, query_source).map(|_| ())
-}
-
-fn compile_query(
-    file_type: FileType,
-    language: &Language,
-    query_source: &str,
-) -> Result<Query, CodeIntelligenceError> {
-    Query::new(language, query_source)
-        .map_err(|source| CodeIntelligenceError::Query { file_type, source })
+    query_for(file_type, Path::new(""))?;
+    Ok(())
 }
 
 fn query_fields(
@@ -150,16 +198,40 @@ fn language_for(file_type: FileType, path: &Path) -> Option<Language> {
     }
 }
 
-fn query_source_for(file_type: FileType) -> Option<&'static str> {
+fn query_for(
+    file_type: FileType,
+    path: &Path,
+) -> Result<Option<&'static Query>, CodeIntelligenceError> {
     match file_type {
-        FileType::Rust => Some(include_str!("queries/rust.scm")),
-        FileType::Python => Some(include_str!("queries/python.scm")),
-        FileType::JavaScript => Some(include_str!("queries/javascript.scm")),
-        FileType::TypeScript => Some(include_str!("queries/typescript.scm")),
-        FileType::Go => Some(include_str!("queries/go.scm")),
-        FileType::Markdown => Some(include_str!("queries/markdown.scm")),
-        _ => None,
+        FileType::Rust => cached_query(&RUST_QUERY).map(Some),
+        FileType::Python => cached_query(&PYTHON_QUERY).map(Some),
+        FileType::JavaScript => cached_query(&JAVASCRIPT_QUERY).map(Some),
+        FileType::TypeScript => {
+            if path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| matches!(extension, "tsx" | "jsx"))
+            {
+                cached_query(&TSX_QUERY).map(Some)
+            } else {
+                cached_query(&TYPESCRIPT_QUERY).map(Some)
+            }
+        }
+        FileType::Go => cached_query(&GO_QUERY).map(Some),
+        FileType::Markdown => cached_query(&MARKDOWN_QUERY).map(Some),
+        _ => Ok(None),
     }
+}
+
+fn cached_query(
+    query: &'static LazyLock<Result<Query, QueryCompileError>>,
+) -> Result<&'static Query, CodeIntelligenceError> {
+    query
+        .as_ref()
+        .map_err(|source| CodeIntelligenceError::Query {
+            file_type: source.file_type,
+            message: source.message.clone(),
+        })
 }
 
 fn markdown_frontmatter(content: &str) -> Vec<DocumentFeature> {
