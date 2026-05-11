@@ -169,7 +169,10 @@ fn _term_key(term: &Term) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
 
     use super::{export_feature_rows, export_pairwise_preferences};
     use crate::{
@@ -212,10 +215,7 @@ mod tests {
         );
 
         assert_eq!(rows.len(), 3);
-        assert!(
-            rows.iter()
-                .any(|row| row.preferred_doc == PathBuf::from("a.rs")
-                    && row.dispreferred_doc == PathBuf::from("b.rs"))
-        );
+        assert!(rows.iter().any(|row| row.preferred_doc == Path::new("a.rs")
+            && row.dispreferred_doc == Path::new("b.rs")));
     }
 }
