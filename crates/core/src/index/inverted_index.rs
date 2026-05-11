@@ -1,14 +1,11 @@
 use std::{
     collections::HashMap,
-    fs,
     path::{Path, PathBuf},
 };
 
-use rayon::iter::{ParallelBridge, ParallelIterator};
-use walkdir::WalkDir;
-
 use crate::{
     index::{
+        corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
         document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
         term::Term,
     },
@@ -35,6 +32,24 @@ pub struct TermFrequencySummary {
     pub term: String,
     pub collection_frequency: usize,
     pub document_frequency: usize,
+}
+
+#[derive(Debug)]
+pub struct IndexBuildResult {
+    pub index: InvertedIndex,
+    pub report: IndexBuildReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexBuildReport {
+    pub indexed_document_count: usize,
+    pub skipped_documents: Vec<SkippedDocument>,
+}
+
+impl IndexBuildReport {
+    pub fn skipped_document_count(&self) -> usize {
+        self.skipped_documents.len()
+    }
 }
 
 #[derive(Debug)]
@@ -98,50 +113,47 @@ impl InvertedIndex<DocumentRegistry> {
 
     pub fn new<P, F>(root: P, transform_fn: F, drop_prefix: Option<P>) -> Self
     where
-        P: AsRef<Path> + Sync,
+        P: AsRef<Path>,
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
-        let root_path: PathBuf = root.as_ref().to_owned();
-        let drop_prefix = drop_prefix.map(|p| p.as_ref().to_owned());
+        Self::build(root, transform_fn, drop_prefix).index
+    }
 
-        let mut documents: Vec<ProcessedDocument> = WalkDir::new(root_path)
-            .into_iter()
-            .par_bridge()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file())
-            .filter_map(|entry| {
-                let full_path = entry.path().to_path_buf();
+    pub fn build<P, F>(root: P, transform_fn: F, drop_prefix: Option<P>) -> IndexBuildResult
+    where
+        P: AsRef<Path>,
+        F: Fn(&str) -> HashMap<Term, u32> + Sync,
+    {
+        let corpus = FileSystemIndexCorpus::new(root, drop_prefix);
+        Self::from_corpus(&corpus, transform_fn)
+    }
 
-                let index_path = if let Some(ref prefix) = drop_prefix {
-                    full_path
-                        .strip_prefix(prefix)
-                        .unwrap_or(&full_path)
-                        .to_owned()
-                } else {
-                    full_path.clone()
-                };
-
-                Self::read_document(&full_path)
-                    .ok()
-                    .map(|content| Self::analyze_document(&index_path, &content, &transform_fn))
-            })
-            .collect();
-
-        documents.sort_by(|left, right| left.path.cmp(&right.path));
-
+    pub fn from_corpus<C, F>(corpus: &C, transform_fn: F) -> IndexBuildResult
+    where
+        C: IndexCorpus,
+        F: Fn(&str) -> HashMap<Term, u32> + Sync,
+    {
+        let scan = corpus.scan();
         let mut registry = DocumentRegistry::new();
         let mut postings = HashMap::new();
-        for document in documents {
+        for document in &scan.documents {
+            let document = Self::analyze_document(document, &transform_fn);
             Self::insert_processed_document(&mut registry, &mut postings, document);
         }
 
         let document_norms = Self::compute_document_norms(&postings, registry.len());
 
-        Self {
+        let index = Self {
             postings,
             documents: registry,
             document_norms,
-        }
+        };
+        let report = IndexBuildReport {
+            indexed_document_count: scan.indexed_document_count(),
+            skipped_documents: scan.skipped_documents,
+        };
+
+        IndexBuildResult { index, report }
     }
 }
 
@@ -149,10 +161,6 @@ impl<R> InvertedIndex<R>
 where
     R: DocumentCatalog,
 {
-    fn read_document(entry_path: &Path) -> Result<String, std::io::Error> {
-        fs::read_to_string(entry_path)
-    }
-
     #[cfg(test)]
     fn process_document<F>(
         entry_path: &Path,
@@ -162,24 +170,31 @@ where
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
-        let document = Self::analyze_document(entry_path, content, transform_fn);
+        let document = Self::analyze_document(
+            &IndexCorpusDocument {
+                path: entry_path.to_path_buf(),
+                content: content.to_string(),
+                file_size_bytes: content.len() as u64,
+            },
+            transform_fn,
+        );
         let mut registry = DocumentRegistry::new();
         let doc_id = registry.insert_or_update(document.path.clone(), document.token_length, 0);
         Self::postings_for_document(doc_id, &document)
     }
 
-    fn analyze_document<F>(entry_path: &Path, content: &str, transform_fn: &F) -> ProcessedDocument
+    fn analyze_document<F>(document: &IndexCorpusDocument, transform_fn: &F) -> ProcessedDocument
     where
         F: Fn(&str) -> HashMap<Term, u32> + Sync,
     {
-        let term_frequencies = transform_fn(content);
+        let term_frequencies = transform_fn(&document.content);
         let token_length: usize = term_frequencies.values().map(|&c| c as usize).sum();
 
         ProcessedDocument {
-            path: entry_path.to_path_buf(),
+            path: document.path.clone(),
             term_frequencies,
             token_length,
-            file_size_bytes: content.len() as u64,
+            file_size_bytes: document.file_size_bytes,
         }
     }
 
@@ -294,9 +309,16 @@ where
             self.remove_postings_for_doc(doc_id);
         }
 
-        match Self::read_document(path) {
+        match std::fs::read_to_string(path) {
             Ok(content) => {
-                let document = Self::analyze_document(path, &content, transform_fn);
+                let document = Self::analyze_document(
+                    &IndexCorpusDocument {
+                        path: path.to_path_buf(),
+                        file_size_bytes: content.len() as u64,
+                        content,
+                    },
+                    transform_fn,
+                );
                 Self::insert_processed_document(&mut self.documents, &mut self.postings, document);
                 self.rebuild_document_norms();
             }
@@ -357,7 +379,7 @@ mod tests {
 
     use super::InvertedIndex;
     use crate::{
-        index::{DocId, document_registry::DocumentRegistry, term::Term},
+        index::{DocId, IndexSkipReason, document_registry::DocumentRegistry, term::Term},
         ranking::idf,
     };
 
@@ -616,6 +638,27 @@ mod tests {
         let path = &index.document(*doc_id).unwrap().path;
 
         assert!(path.is_absolute());
+    }
+
+    #[test]
+    fn build_reports_indexed_and_skipped_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(dir.path(), "valid.txt", "token");
+        std::fs::write(dir.path().join("binary.bin"), [0xff, 0xfe]).unwrap();
+
+        let result = InvertedIndex::build(dir.path(), identity_transform, Some(dir.path()));
+
+        assert_eq!(result.index.num_docs(), 1);
+        assert_eq!(result.report.indexed_document_count, 1);
+        assert_eq!(result.report.skipped_document_count(), 1);
+        assert_eq!(
+            result.report.skipped_documents[0].path,
+            dir.path().join("binary.bin")
+        );
+        assert!(matches!(
+            result.report.skipped_documents[0].reason,
+            IndexSkipReason::Read { .. }
+        ));
     }
 
     #[test]
