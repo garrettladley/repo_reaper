@@ -4,18 +4,27 @@ use std::{
 };
 
 use regex::Regex;
-use walkdir::WalkDir;
 
 use super::{RegexSearchError, RegexSearchMatch, line_range_for_match};
+use crate::fs_walk::filesystem_files;
 
 #[derive(Debug, Clone)]
 pub struct RegexSearchEngine {
     root: PathBuf,
+    respect_gitignore: bool,
 }
 
 impl RegexSearchEngine {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            respect_gitignore: true,
+        }
+    }
+
+    pub fn with_respect_gitignore(mut self, respect_gitignore: bool) -> Self {
+        self.respect_gitignore = respect_gitignore;
+        self
     }
 
     pub fn search(&self, pattern: &str) -> Result<Vec<RegexSearchMatch>, RegexSearchError> {
@@ -34,11 +43,9 @@ impl RegexSearchEngine {
     }
 
     fn candidate_files(&self) -> Vec<PathBuf> {
-        let mut files = WalkDir::new(&self.root)
+        let mut files = filesystem_files(&self.root, self.respect_gitignore)
             .into_iter()
             .filter_map(Result::ok)
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| entry.path().to_path_buf())
             .collect::<Vec<_>>();
 
         files.sort();

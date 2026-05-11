@@ -74,6 +74,9 @@ struct Args {
     /// Rebuild the ranked index even when a compatible snapshot exists
     #[clap(long, default_value = "false")]
     reindex: bool,
+    /// Respect Git ignore rules when indexing inside a Git repository
+    #[clap(long, default_value_t = true, action = clap::ArgAction::Set)]
+    respect_gitignore: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -91,7 +94,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     if let Some(Commands::Regex { pattern }) = &args.command {
-        run_regex_search(&args.directory, pattern)?;
+        run_regex_search(&args.directory, pattern, args.respect_gitignore)?;
         return Ok(());
     }
 
@@ -110,7 +113,7 @@ fn main() -> Result<()> {
     }
 
     if args.stats {
-        print_directory_stats(&args.directory, &config);
+        print_directory_stats(&args.directory, &config, args.respect_gitignore);
         return Ok(());
     }
 
@@ -124,17 +127,18 @@ fn main() -> Result<()> {
             feedback_expansion: args.feedback_expansion,
             index_dir: args.index_dir,
             reindex: args.reindex,
+            respect_gitignore: args.respect_gitignore,
         },
     )
 }
 
-fn print_directory_stats(directory: &Path, config: &ReaperConfig) {
+fn print_directory_stats(directory: &Path, config: &ReaperConfig, respect_gitignore: bool) {
     println!("Indexing files in {}", directory.display());
-    let index = InvertedIndex::new(
-        directory,
-        |content: &str| n_gram_transform(content, config),
-        None::<&Path>,
-    );
+    let corpus = repo_reaper_core::index::FileSystemIndexCorpus::new(directory, None::<&Path>)
+        .with_respect_gitignore(respect_gitignore);
+    let index =
+        InvertedIndex::from_corpus(&corpus, |content: &str| n_gram_transform(content, config))
+            .index;
     println!("Successfully indexed {} files", index.num_docs());
     print_corpus_stats(&index.corpus_stats(10));
 }
@@ -159,8 +163,10 @@ fn print_corpus_stats(stats: &CorpusStats) {
     }
 }
 
-fn run_regex_search(directory: &Path, pattern: &str) -> Result<()> {
-    let matches = RegexSearchEngine::new(directory).search(pattern)?;
+fn run_regex_search(directory: &Path, pattern: &str, respect_gitignore: bool) -> Result<()> {
+    let matches = RegexSearchEngine::new(directory)
+        .with_respect_gitignore(respect_gitignore)
+        .search(pattern)?;
 
     if matches.is_empty() {
         println!("No regex matches found");
