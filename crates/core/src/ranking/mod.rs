@@ -10,7 +10,7 @@ pub mod scorer;
 pub mod tf_idf;
 mod utils;
 
-pub use bm25::{BM25, BM25HyperParams, get_configuration};
+pub use bm25::{BM25, BM25HyperParams};
 pub use bm25f::{BM25F, BM25FHyperParams};
 pub use cosine_similarity::CosineSimilarity;
 pub use explanation::{

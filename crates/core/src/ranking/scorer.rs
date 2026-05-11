@@ -10,7 +10,7 @@ use crate::{
         BM25, BM25F, BM25FHyperParams, BM25HyperParams, CosineSimilarity, FieldContribution,
         ProximityConfig, QueryLikelihood, QueryLikelihoodParams, ScoreExplanation,
         ScoreWithExplanation, ScoredWithExplanations, StaticQualityContribution, TFIDF,
-        TermExplanation, get_configuration, idf,
+        TermExplanation, idf,
     },
 };
 
@@ -518,22 +518,12 @@ impl FromStr for RankingAlgo {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "cosim" => Ok(RankingAlgo::CosineSimilarity),
-            "bm25" => {
-                let hyper_params =
-                    get_configuration().map_err(|e| format!("failed to load BM25 config: {e}"))?;
-
-                Ok(RankingAlgo::BM25(hyper_params))
-            }
+            "bm25" => Ok(RankingAlgo::BM25(BM25HyperParams::default())),
             "bm25f" => Ok(RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())),
-            "bm25-proximity" | "proximity" => {
-                let hyper_params =
-                    get_configuration().map_err(|e| format!("failed to load BM25 config: {e}"))?;
-
-                Ok(RankingAlgo::BM25Proximity(
-                    hyper_params,
-                    ProximityConfig::default(),
-                ))
-            }
+            "bm25-proximity" | "proximity" => Ok(RankingAlgo::BM25Proximity(
+                BM25HyperParams::default(),
+                ProximityConfig::default(),
+            )),
             "ql" | "ql-dirichlet" | "query-likelihood" => Ok(RankingAlgo::QueryLikelihood(
                 QueryLikelihoodParams::dirichlet_defaults(),
             )),

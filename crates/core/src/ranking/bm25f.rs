@@ -4,7 +4,6 @@ use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    error::RankingError,
     index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
     query::{AnalyzedQuery, QueryIntent, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
@@ -104,10 +103,6 @@ impl BM25FHyperParams {
 
         base * multiplier
     }
-}
-
-pub fn get_configuration() -> Result<BM25FHyperParams, RankingError> {
-    Ok(BM25FHyperParams::code_search_defaults())
 }
 
 pub struct BM25F {

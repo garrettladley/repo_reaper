@@ -2,27 +2,21 @@ use dashmap::DashMap;
 use rayon::iter::{ParallelBridge, ParallelIterator};
 
 use crate::{
-    error::RankingError,
     index::{DocId, PostingList, RankedIndexReader, Term},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
 
-#[derive(serde::Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct BM25HyperParams {
     pub k1: f64,
     pub b: f64,
 }
 
-pub fn get_configuration() -> Result<BM25HyperParams, RankingError> {
-    let base_path = std::env::current_dir().map_err(RankingError::CurrentDir)?;
-    let configuration_directory = base_path.join("configuration");
-
-    let settings = config::Config::builder()
-        .add_source(config::File::from(configuration_directory.join("bm25.yml")))
-        .build()?;
-
-    Ok(settings.try_deserialize::<BM25HyperParams>()?)
+impl Default for BM25HyperParams {
+    fn default() -> Self {
+        Self { k1: 1.2, b: 0.75 }
+    }
 }
 
 pub struct BM25 {
