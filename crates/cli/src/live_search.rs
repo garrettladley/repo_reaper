@@ -27,6 +27,8 @@ use repo_reaper_core::{
     tokenizer::n_gram_transform,
 };
 
+const MAX_SNAPSHOT_LOAD_BYTES: u64 = 512 * 1024 * 1024;
+
 pub(crate) struct LiveSearchOptions {
     pub(crate) top_n: usize,
     pub(crate) query_expansion: bool,
@@ -113,55 +115,76 @@ fn prepare_ranked_search(
     let index = if let Some(index_dir) = options.index_dir.as_ref().filter(|_| !options.reindex) {
         let path = snapshot_path(index_dir);
         if path.exists() {
-            if verbose {
-                ui.status(
-                    "cache",
-                    &format!(
-                        "{} loading snapshot ({})",
-                        index_dir.display(),
-                        file_size_label(&path)
-                    ),
-                );
-            }
-            match load_snapshot(index_dir, directory, &config) {
-                Ok(mut index) => {
-                    let events =
-                        read_events(index_dir).context("failed to read index event log")?;
-                    let event_count = events.len();
-                    replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
-                    should_write_cache = event_count > 0;
-                    if verbose {
-                        ui.status(
-                            "cache",
-                            &format!(
-                                "{} loaded{}",
-                                index_dir.display(),
-                                if event_count == 0 {
-                                    String::new()
-                                } else {
-                                    format!(" + {event_count} pending updates")
-                                }
-                            ),
-                        );
-                    }
-                    index
+            if let Some(bytes) = oversized_snapshot_bytes(&path) {
+                should_write_cache = true;
+                if verbose {
+                    ui.status(
+                        "cache",
+                        &format!(
+                            "{} snapshot is {}; rebuilding compact cache",
+                            index_dir.display(),
+                            human_bytes(bytes)
+                        ),
+                    );
                 }
-                Err(error) => {
-                    should_write_cache = true;
-                    if verbose {
-                        ui.status(
-                            "cache",
-                            &format!("{} snapshot unusable; rebuilding", index_dir.display()),
-                        );
-                        ui.detail(&error.to_string());
+                build_index(
+                    directory,
+                    &config,
+                    transformer.as_ref(),
+                    fielded,
+                    options.respect_gitignore,
+                )
+            } else {
+                if verbose {
+                    ui.status(
+                        "cache",
+                        &format!(
+                            "{} loading snapshot ({})",
+                            index_dir.display(),
+                            file_size_label(&path)
+                        ),
+                    );
+                }
+                match load_snapshot(index_dir, directory, &config) {
+                    Ok(mut index) => {
+                        let events =
+                            read_events(index_dir).context("failed to read index event log")?;
+                        let event_count = events.len();
+                        replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
+                        should_write_cache = event_count > 0;
+                        if verbose {
+                            ui.status(
+                                "cache",
+                                &format!(
+                                    "{} loaded{}",
+                                    index_dir.display(),
+                                    if event_count == 0 {
+                                        String::new()
+                                    } else {
+                                        format!(" + {event_count} pending updates")
+                                    }
+                                ),
+                            );
+                        }
+                        index
                     }
-                    build_index(
-                        directory,
-                        &config,
-                        transformer.as_ref(),
-                        fielded,
-                        options.respect_gitignore,
-                    )
+                    Err(error) => {
+                        should_write_cache = true;
+                        if verbose {
+                            ui.status(
+                                "cache",
+                                &format!("{} snapshot unusable; rebuilding", index_dir.display()),
+                            );
+                            ui.detail(&error.to_string());
+                        }
+                        build_index(
+                            directory,
+                            &config,
+                            transformer.as_ref(),
+                            fielded,
+                            options.respect_gitignore,
+                        )
+                    }
                 }
             }
         } else {
@@ -251,6 +274,17 @@ fn file_size_label(path: &Path) -> String {
     fs::metadata(path)
         .map(|metadata| human_bytes(metadata.len()))
         .unwrap_or_else(|_| "unknown size".to_string())
+}
+
+fn oversized_snapshot_bytes(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.len())
+        .filter(|bytes| snapshot_exceeds_load_budget(*bytes))
+}
+
+fn snapshot_exceeds_load_budget(bytes: u64) -> bool {
+    bytes > MAX_SNAPSHOT_LOAD_BYTES
 }
 
 fn human_bytes(bytes: u64) -> String {
@@ -582,7 +616,7 @@ fn log_query(
 
 #[cfg(test)]
 mod tests {
-    use super::human_bytes;
+    use super::{MAX_SNAPSHOT_LOAD_BYTES, human_bytes, snapshot_exceeds_load_budget};
 
     #[test]
     fn human_bytes_formats_cache_sizes_for_status_lines() {
@@ -590,5 +624,11 @@ mod tests {
         assert_eq!(human_bytes(1536), "1.5 KiB");
         assert_eq!(human_bytes(2 * 1024 * 1024), "2.0 MiB");
         assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0 GiB");
+    }
+
+    #[test]
+    fn snapshot_load_budget_allows_normal_snapshots_and_rejects_giant_ones() {
+        assert!(!snapshot_exceeds_load_budget(MAX_SNAPSHOT_LOAD_BYTES));
+        assert!(snapshot_exceeds_load_budget(MAX_SNAPSHOT_LOAD_BYTES + 1));
     }
 }
