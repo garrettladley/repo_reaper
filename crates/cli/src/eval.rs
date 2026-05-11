@@ -95,8 +95,12 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
     let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
         .context("failed to deserialize evaluation JSON data")?;
 
-    let evaluation_data = EvaluationData::parse(raw_evaluation_data, config)
-        .context("failed to parse evaluation data")?;
+    let evaluation_data = EvaluationData::parse_with_code_search(
+        raw_evaluation_data,
+        config,
+        args.ranking_algorithm.needs_fielded_index(),
+    )
+    .context("failed to parse evaluation data")?;
 
     let index_root = match &evaluation_data.corpus {
         EvaluationCorpus::Tree { root } => root.clone(),
@@ -126,11 +130,15 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
         }
     };
 
-    let inverted_index = InvertedIndex::new(
-        index_root.as_path(),
-        |content: &str| n_gram_transform(content, config),
-        Some(index_root.as_path()),
-    );
+    let inverted_index = if args.ranking_algorithm.needs_fielded_index() {
+        InvertedIndex::new_fielded(index_root.as_path(), config, Some(index_root.as_path()))
+    } else {
+        InvertedIndex::new(
+            index_root.as_path(),
+            |content: &str| n_gram_transform(content, config),
+            Some(index_root.as_path()),
+        )
+    };
 
     let queries = evaluation_data
         .examples

@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use crate::{config::Config, index::Term, tokenizer::n_gram_transform};
+use crate::{
+    config::Config,
+    index::Term,
+    tokenizer::{AnalyzerField, AnalyzerProfile, FileType, n_gram_transform},
+};
 
 #[derive(Clone, Debug)]
 pub struct AnalyzedQuery {
@@ -17,6 +21,19 @@ pub struct QueryTerm {
 impl AnalyzedQuery {
     pub fn new(query: &str, config: &Config) -> Self {
         Self::from_frequencies(query.to_string(), n_gram_transform(query, config))
+    }
+
+    pub fn new_code_search(query: &str, config: &Config) -> Self {
+        let profile = AnalyzerProfile::for_file_type(FileType::Rust);
+        let frequencies = profile
+            .analyze(AnalyzerField::Content, query, config)
+            .into_iter()
+            .fold(HashMap::new(), |mut acc, token| {
+                *acc.entry(Term(token)).or_insert(0) += 1;
+                acc
+            });
+
+        Self::from_frequencies(query.to_string(), frequencies)
     }
 
     pub fn from_frequencies(

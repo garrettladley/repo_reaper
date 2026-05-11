@@ -387,6 +387,10 @@ where
         self.documents.avg_doc_length()
     }
 
+    pub fn avg_field_length(&self, field: DocumentField) -> f64 {
+        self.documents.avg_field_length(field)
+    }
+
     pub fn corpus_stats(&self, high_frequency_limit: usize) -> CorpusStats {
         let mut term_summaries: Vec<TermFrequencySummary> = self
             .postings

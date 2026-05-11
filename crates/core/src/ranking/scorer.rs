@@ -7,9 +7,9 @@ use crate::{
     index::{DocId, DocumentField, InvertedIndex, Term, TermDocument},
     query::{AnalyzedQuery, QueryTerm},
     ranking::{
-        BM25, BM25HyperParams, CosineSimilarity, FieldContribution, ScoreExplanation,
-        ScoreWithExplanation, ScoredWithExplanations, TFIDF, TermExplanation, get_configuration,
-        idf,
+        BM25, BM25F, BM25FHyperParams, BM25HyperParams, CosineSimilarity, FieldContribution,
+        ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations, TFIDF, TermExplanation,
+        get_configuration, idf,
     },
 };
 
@@ -44,6 +44,7 @@ impl std::fmt::Display for Score {
 pub enum RankingAlgo {
     CosineSimilarity,
     BM25(BM25HyperParams),
+    BM25F(BM25FHyperParams),
     TFIDF,
 }
 
@@ -69,6 +70,13 @@ impl RankingAlgorithm for RankingAlgo {
             RankingAlgo::CosineSimilarity => score_with(CosineSimilarity, inverted_index, query),
             RankingAlgo::BM25(hyper_params) => score_with(
                 BM25 {
+                    hyper_params: hyper_params.clone(),
+                },
+                inverted_index,
+                query,
+            ),
+            RankingAlgo::BM25F(hyper_params) => score_with(
+                BM25F {
                     hyper_params: hyper_params.clone(),
                 },
                 inverted_index,
@@ -161,12 +169,19 @@ impl RankingAlgo {
             RankingAlgo::BM25(hyper_params) => {
                 explain_bm25(inverted_index, query, doc_id, hyper_params)
             }
+            RankingAlgo::BM25F(hyper_params) => {
+                explain_bm25f(inverted_index, query, doc_id, hyper_params)
+            }
             RankingAlgo::CosineSimilarity | RankingAlgo::TFIDF => {
                 explain_matched_terms(inverted_index, query, doc_id)
             }
         };
 
         ScoreExplanation { final_score, terms }
+    }
+
+    pub fn needs_fielded_index(&self) -> bool {
+        matches!(self, Self::BM25F(_))
     }
 }
 
@@ -232,7 +247,52 @@ fn explain_matched_terms(
         .collect()
 }
 
+fn explain_bm25f(
+    inverted_index: &InvertedIndex,
+    query: &AnalyzedQuery,
+    doc_id: DocId,
+    hyper_params: &BM25FHyperParams,
+) -> Vec<TermExplanation> {
+    let scorer = BM25F {
+        hyper_params: hyper_params.clone(),
+    };
+    let num_docs = inverted_index.num_docs();
+
+    query
+        .terms()
+        .filter_map(|(term, query_term)| {
+            let documents = inverted_index.get_postings(term)?;
+            let term_doc = documents.get(&doc_id)?;
+            let term_idf = idf(num_docs, documents.len());
+            let weighted_tf = scorer.weighted_term_frequency(inverted_index, term_doc);
+            let contribution = scorer.score_weighted_tf(query_term.weight, term_idf, weighted_tf);
+
+            Some(TermExplanation {
+                term: term.0.clone(),
+                query_weight: query_term.weight,
+                term_frequency: term_doc.term_freq,
+                document_frequency: documents.len(),
+                idf: term_idf,
+                matched_fields: field_contributions_with_weights(
+                    term_doc,
+                    contribution,
+                    &hyper_params.field_weights,
+                ),
+                contribution,
+            })
+        })
+        .collect()
+}
+
 fn field_contributions(term_doc: &TermDocument, contribution: f64) -> Vec<FieldContribution> {
+    field_contributions_with_weights(term_doc, contribution, &HashMap::new())
+}
+
+fn field_contributions_with_weights(
+    term_doc: &TermDocument,
+    contribution: f64,
+    field_weights: &HashMap<DocumentField, f64>,
+) -> Vec<FieldContribution> {
     let mut fields = DocumentField::ALL
         .into_iter()
         .filter_map(|field| {
@@ -251,7 +311,7 @@ fn field_contributions(term_doc: &TermDocument, contribution: f64) -> Vec<FieldC
                 field,
                 term_frequency,
                 field_length: term_doc.field_length(field),
-                field_weight: 1.0,
+                field_weight: field_weights.get(&field).copied().unwrap_or(1.0),
                 contribution: proportional_contribution,
             })
         })
@@ -273,6 +333,7 @@ impl FromStr for RankingAlgo {
 
                 Ok(RankingAlgo::BM25(hyper_params))
             }
+            "bm25f" => Ok(RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())),
             "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }

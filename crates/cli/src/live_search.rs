@@ -26,16 +26,22 @@ pub(crate) fn run(
 ) -> Result<()> {
     let config_clone = Arc::clone(&config);
     let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
-    let transformer_clone = Arc::clone(&transformer);
     let path_clone = directory.clone();
 
     println!("Indexing files in {}", directory.display());
 
-    let inverted_index = Arc::new(Mutex::new(InvertedIndex::new(
-        directory,
-        transformer_clone.as_ref(),
-        None,
-    )));
+    let inverted_index = if algo.needs_fielded_index() {
+        Arc::new(Mutex::new(InvertedIndex::new_fielded(
+            directory, &config, None,
+        )))
+    } else {
+        let transformer_clone = Arc::clone(&transformer);
+        Arc::new(Mutex::new(InvertedIndex::new(
+            directory,
+            transformer_clone.as_ref(),
+            None,
+        )))
+    };
 
     println!(
         "Successfully indexed {} files",
@@ -45,7 +51,13 @@ pub(crate) fn run(
             .num_docs()
     );
 
-    spawn_watcher(path_clone, Arc::clone(&inverted_index), transformer);
+    spawn_watcher(
+        path_clone,
+        Arc::clone(&inverted_index),
+        transformer,
+        Arc::clone(&config),
+        algo.needs_fielded_index(),
+    );
     run_repl(config, algo, top_n, inverted_index)
 }
 
@@ -55,6 +67,8 @@ fn spawn_watcher(
     transformer: Arc<
         impl Fn(&str) -> HashMap<repo_reaper_core::index::Term, u32> + Send + Sync + 'static,
     >,
+    config: Arc<ReaperConfig>,
+    fielded: bool,
 ) {
     let (tx, rx) = std::sync::mpsc::channel();
     let rx = Arc::new(Mutex::new(rx));
@@ -102,7 +116,11 @@ fn spawn_watcher(
                         };
 
                         for path in &event.paths {
-                            index.update(path, &transformer.as_ref());
+                            if fielded {
+                                index.update_fielded(path, &config);
+                            } else {
+                                index.update(path, &transformer.as_ref());
+                            }
                         }
                     }
                 },
@@ -131,7 +149,11 @@ fn run_repl(
             break;
         }
 
-        let query = AnalyzedQuery::new(&query, &config);
+        let query = if algo.needs_fielded_index() {
+            AnalyzedQuery::new_code_search(&query, &config)
+        } else {
+            AnalyzedQuery::new(&query, &config)
+        };
 
         let ranking = {
             let index = inverted_index

@@ -97,6 +97,7 @@ pub trait DocumentCatalog {
     fn is_empty(&self) -> bool;
     fn total_token_length(&self) -> u64;
     fn avg_doc_length(&self) -> f64;
+    fn avg_field_length(&self, field: DocumentField) -> f64;
 }
 
 impl DocumentRegistry {
@@ -209,6 +210,20 @@ impl DocumentCatalog for DocumentRegistry {
         }
 
         self.total_token_length as f64 / self.documents.len() as f64
+    }
+
+    fn avg_field_length(&self, field: DocumentField) -> f64 {
+        if self.documents.is_empty() {
+            return 0.0;
+        }
+
+        let total = self
+            .documents
+            .values()
+            .map(|metadata| metadata.field_length(field))
+            .sum::<usize>();
+
+        total as f64 / self.documents.len() as f64
     }
 }
 

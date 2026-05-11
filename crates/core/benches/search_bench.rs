@@ -5,7 +5,7 @@ use repo_reaper_core::{
     config::Config,
     index::InvertedIndex,
     query::AnalyzedQuery,
-    ranking::{BM25HyperParams, RankingAlgo},
+    ranking::{BM25FHyperParams, BM25HyperParams, RankingAlgo},
     regex_search::{RegexSearchEngine, TrigramIndex},
     tokenizer::n_gram_transform,
 };
@@ -30,6 +30,10 @@ fn bench_config() -> Config {
 
 fn bm25() -> RankingAlgo {
     RankingAlgo::BM25(BM25HyperParams { k1: 1.2, b: 0.75 })
+}
+
+fn bm25f() -> RankingAlgo {
+    RankingAlgo::BM25F(BM25FHyperParams::code_search_defaults())
 }
 
 fn deterministic_corpus(doc_count: usize, tokens_per_doc: usize, seed: u64) -> Vec<String> {
@@ -114,6 +118,10 @@ fn build_index(root: &Path, config: &Config) -> InvertedIndex {
     )
 }
 
+fn build_fielded_index(root: &Path, config: &Config) -> InvertedIndex {
+    InvertedIndex::new_fielded(root, config, Some(root))
+}
+
 fn bench_tokenization(c: &mut Criterion) {
     let config = bench_config();
     let docs = deterministic_corpus(1, TOKENS_PER_DOC * 8, CORPUS_SEED);
@@ -141,12 +149,17 @@ fn bench_ranked_search(c: &mut Criterion) {
     let config = bench_config();
     let corpus = corpus_fixture();
     let index = build_index(corpus.path(), &config);
+    let fielded_index = build_fielded_index(corpus.path(), &config);
     let query = AnalyzedQuery::new("repository token parser update", &config);
     let bm25 = bm25();
+    let bm25f = bm25f();
 
     let mut group = c.benchmark_group("ranked_search");
     group.bench_function("bm25", |b| {
         b.iter(|| bm25.rank(black_box(&index), black_box(&query), black_box(10)));
+    });
+    group.bench_function("bm25f", |b| {
+        b.iter(|| bm25f.rank(black_box(&fielded_index), black_box(&query), black_box(10)));
     });
     group.bench_function("cosine", |b| {
         b.iter(|| {
@@ -163,16 +176,27 @@ fn bench_search_comparison(c: &mut Criterion) {
     let config = bench_config();
     let corpus = corpus_fixture();
     let ranked_index = build_index(corpus.path(), &config);
+    let fielded_index = build_fielded_index(corpus.path(), &config);
     let regex_index = TrigramIndex::new(corpus.path());
     let regex_engine = RegexSearchEngine::new(corpus.path());
     let ranked_query = AnalyzedQuery::new("repository token parser update", &config);
     let bm25 = bm25();
+    let bm25f = bm25f();
 
     let mut group = c.benchmark_group("search_comparison");
     group.bench_function("traditional_ir/bm25", |b| {
         b.iter(|| {
             bm25.rank(
                 black_box(&ranked_index),
+                black_box(&ranked_query),
+                black_box(10),
+            )
+        });
+    });
+    group.bench_function("traditional_ir/bm25f", |b| {
+        b.iter(|| {
+            bm25f.rank(
+                black_box(&fielded_index),
                 black_box(&ranked_query),
                 black_box(10),
             )
