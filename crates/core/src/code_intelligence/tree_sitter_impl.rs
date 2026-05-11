@@ -190,7 +190,7 @@ fn markdown_frontmatter(content: &str) -> Vec<ExtractedField> {
 mod tests {
     use std::path::Path;
 
-    use super::extract;
+    use super::{compile_language_query, extract};
     use crate::{index::DocumentField, tokenizer::FileType};
 
     fn texts_for(field: DocumentField, source: &[super::ExtractedField]) -> Vec<&str> {
@@ -199,6 +199,20 @@ mod tests {
             .filter(|extracted| extracted.field == field)
             .map(|extracted| extracted.text.as_str())
             .collect()
+    }
+
+    #[test]
+    fn language_queries_compile() {
+        for file_type in [
+            FileType::Rust,
+            FileType::Python,
+            FileType::JavaScript,
+            FileType::TypeScript,
+            FileType::Go,
+            FileType::Markdown,
+        ] {
+            compile_language_query(file_type).unwrap();
+        }
     }
 
     #[test]
