@@ -2,7 +2,7 @@ use std::{path::Path, str::Utf8Error};
 
 use tree_sitter::{Language, Parser, Query, QueryCursor, StreamingIterator};
 
-use super::{ByteSpan, CodeIntelligence, ExtractedField};
+use super::{ByteSpan, CodeIntelligence, DocumentFeature};
 use crate::{index::DocumentField, tokenizer::FileType};
 
 #[derive(Debug, thiserror::Error)]
@@ -79,7 +79,7 @@ fn query_fields(
     query: &Query,
     root: tree_sitter::Node<'_>,
     source: &[u8],
-) -> Result<Vec<ExtractedField>, CodeIntelligenceError> {
+) -> Result<Vec<DocumentFeature>, CodeIntelligenceError> {
     let capture_names = query.capture_names();
     let mut cursor = QueryCursor::new();
     let mut matches = cursor.matches(query, root, source);
@@ -100,7 +100,7 @@ fn query_fields(
             if text.is_empty() {
                 continue;
             }
-            fields.push(ExtractedField {
+            fields.push(DocumentFeature {
                 field,
                 text,
                 span: Some(ByteSpan {
@@ -162,7 +162,7 @@ fn query_source_for(file_type: FileType) -> Option<&'static str> {
     }
 }
 
-fn markdown_frontmatter(content: &str) -> Vec<ExtractedField> {
+fn markdown_frontmatter(content: &str) -> Vec<DocumentFeature> {
     let Some(rest) = content.strip_prefix("---\n") else {
         return Vec::new();
     };
@@ -176,7 +176,7 @@ fn markdown_frontmatter(content: &str) -> Vec<ExtractedField> {
         return Vec::new();
     }
 
-    vec![ExtractedField {
+    vec![DocumentFeature {
         field: DocumentField::Frontmatter,
         text,
         span: Some(ByteSpan {
@@ -193,7 +193,7 @@ mod tests {
     use super::{compile_language_query, extract};
     use crate::{index::DocumentField, tokenizer::FileType};
 
-    fn texts_for(field: DocumentField, source: &[super::ExtractedField]) -> Vec<&str> {
+    fn texts_for(field: DocumentField, source: &[super::DocumentFeature]) -> Vec<&str> {
         source
             .iter()
             .filter(|extracted| extracted.field == field)
@@ -234,7 +234,7 @@ impl Scorer for SearchHit {
         let extracted = extract(FileType::Rust, Path::new("lib.rs"), source)
             .unwrap()
             .unwrap();
-        let fields = extracted.fields();
+        let fields = extracted.features();
         let symbols = texts_for(DocumentField::Symbol, fields);
         let imports = texts_for(DocumentField::Import, fields);
         let comments = texts_for(DocumentField::Comment, fields);

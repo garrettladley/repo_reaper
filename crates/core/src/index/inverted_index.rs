@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    code_intelligence::{DocumentFeature, DocumentFeatures},
     config::Config,
     index::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
@@ -545,77 +546,97 @@ struct RawDocumentFields {
     spans: Vec<FieldSpan>,
 }
 
-impl RawDocumentFields {
-    fn insert(&mut self, field: DocumentField, value: String) {
-        self.values.insert(field, value);
-    }
+fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
+    let file_type = FileType::detect(path);
+    let features = document_features(path, content, file_type);
+    let mut fields = RawDocumentFields::default();
 
-    fn extend_field(&mut self, field: DocumentField, values: impl IntoIterator<Item = String>) {
-        let mut values = values.into_iter().filter(|value| !value.trim().is_empty());
-        let Some(first) = values.next() else {
-            return;
-        };
-        let field_value = self.values.entry(field).or_default();
+    for feature in features.features() {
+        if feature.text.trim().is_empty() {
+            continue;
+        }
+
+        let field_value = fields.values.entry(feature.field).or_default();
         if !field_value.is_empty() {
             field_value.push('\n');
         }
-        field_value.push_str(&first);
-        for value in values {
-            field_value.push('\n');
-            field_value.push_str(&value);
+        field_value.push_str(&feature.text);
+
+        if let Some(span) = feature.span {
+            fields.spans.push(FieldSpan {
+                field: feature.field,
+                start_byte: span.start,
+                end_byte: span.end,
+            });
         }
-    }
-
-    fn push_span(&mut self, span: FieldSpan) {
-        self.spans.push(span);
-    }
-}
-
-fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
-    let mut fields = RawDocumentFields::default();
-
-    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
-        fields.insert(DocumentField::FileName, file_name.to_string());
-    }
-
-    fields.insert(
-        DocumentField::RelativePath,
-        path.to_string_lossy().into_owned(),
-    );
-
-    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
-        fields.insert(DocumentField::Extension, extension.to_string());
-    }
-
-    fields.insert(DocumentField::Content, content.to_string());
-    fields.insert(
-        DocumentField::Identifier,
-        extract_identifier_lexemes(content).join(" "),
-    );
-
-    let parser_fields = crate::code_intelligence::extract(FileType::detect(path), path, content)
-        .ok()
-        .flatten();
-    if let Some(parser_fields) = parser_fields {
-        for extracted in parser_fields.fields() {
-            fields.extend_field(extracted.field, [extracted.text.clone()]);
-            if let Some(span) = extracted.span {
-                fields.push_span(FieldSpan {
-                    field: extracted.field,
-                    start_byte: span.start,
-                    end_byte: span.end,
-                });
-            }
-        }
-    } else {
-        fields.extend_field(DocumentField::Comment, extract_comments(content));
-        fields.extend_field(
-            DocumentField::StringLiteral,
-            extract_string_literals(content),
-        );
     }
 
     fields
+}
+
+fn document_features(path: &Path, content: &str, file_type: FileType) -> DocumentFeatures {
+    let mut features = Vec::new();
+
+    if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
+        features.push(DocumentFeature {
+            field: DocumentField::FileName,
+            text: file_name.to_string(),
+            span: None,
+        });
+    }
+
+    features.push(DocumentFeature {
+        field: DocumentField::RelativePath,
+        text: path.to_string_lossy().into_owned(),
+        span: None,
+    });
+
+    if let Some(extension) = path.extension().and_then(|extension| extension.to_str()) {
+        features.push(DocumentFeature {
+            field: DocumentField::Extension,
+            text: extension.to_string(),
+            span: None,
+        });
+    }
+
+    features.push(DocumentFeature {
+        field: DocumentField::Content,
+        text: content.to_string(),
+        span: None,
+    });
+    features.push(DocumentFeature {
+        field: DocumentField::Identifier,
+        text: extract_identifier_lexemes(content).join(" "),
+        span: None,
+    });
+
+    let parser_fields = crate::code_intelligence::extract(file_type, path, content)
+        .ok()
+        .flatten();
+    if let Some(parser_fields) = parser_fields {
+        features.extend(parser_fields.into_features());
+    } else {
+        features.extend(
+            extract_comments(content)
+                .into_iter()
+                .map(|text| DocumentFeature {
+                    field: DocumentField::Comment,
+                    text,
+                    span: None,
+                }),
+        );
+        features.extend(
+            extract_string_literals(content)
+                .into_iter()
+                .map(|text| DocumentFeature {
+                    field: DocumentField::StringLiteral,
+                    text,
+                    span: None,
+                }),
+        );
+    }
+
+    DocumentFeatures::new(file_type, features)
 }
 
 fn extract_identifier_lexemes(content: &str) -> Vec<String> {
