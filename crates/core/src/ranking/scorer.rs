@@ -8,8 +8,9 @@ use crate::{
     query::{AnalyzedQuery, QueryTerm},
     ranking::{
         BM25, BM25F, BM25FHyperParams, BM25HyperParams, CosineSimilarity, FieldContribution,
-        ProximityConfig, ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations, TFIDF,
-        TermExplanation, get_configuration, idf,
+        ProximityConfig, QueryLikelihood, QueryLikelihoodParams, ScoreExplanation,
+        ScoreWithExplanation, ScoredWithExplanations, TFIDF, TermExplanation, get_configuration,
+        idf,
     },
 };
 
@@ -46,6 +47,7 @@ pub enum RankingAlgo {
     BM25(BM25HyperParams),
     BM25F(BM25FHyperParams),
     BM25Proximity(BM25HyperParams, ProximityConfig),
+    QueryLikelihood(QueryLikelihoodParams),
     TFIDF,
 }
 
@@ -103,6 +105,10 @@ impl RankingAlgorithm for RankingAlgo {
                 }
                 scored
             }
+            RankingAlgo::QueryLikelihood(params) => QueryLikelihood {
+                params: params.clone(),
+            }
+            .score(inverted_index, query),
             RankingAlgo::TFIDF => score_with(TFIDF, inverted_index, query),
         }
     }
@@ -200,9 +206,9 @@ impl RankingAlgo {
             RankingAlgo::BM25Proximity(hyper_params, _) => {
                 explain_bm25(inverted_index, query, doc_id, hyper_params)
             }
-            RankingAlgo::CosineSimilarity | RankingAlgo::TFIDF => {
-                explain_matched_terms(inverted_index, query, doc_id)
-            }
+            RankingAlgo::CosineSimilarity
+            | RankingAlgo::QueryLikelihood(_)
+            | RankingAlgo::TFIDF => explain_matched_terms(inverted_index, query, doc_id),
         };
 
         ScoreExplanation { final_score, terms }
@@ -371,6 +377,12 @@ impl FromStr for RankingAlgo {
                     ProximityConfig::default(),
                 ))
             }
+            "ql" | "ql-dirichlet" | "query-likelihood" => Ok(RankingAlgo::QueryLikelihood(
+                QueryLikelihoodParams::dirichlet_defaults(),
+            )),
+            "ql-jm" | "jelinek-mercer" => Ok(RankingAlgo::QueryLikelihood(
+                QueryLikelihoodParams::jelinek_mercer_defaults(),
+            )),
             "tfidf" => Ok(RankingAlgo::TFIDF),
             _ => Err(format!("{} is not a valid ranking algorithm", s)),
         }

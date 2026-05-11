@@ -501,6 +501,20 @@ where
         }
     }
 
+    pub fn total_token_count(&self) -> u64 {
+        self.documents.total_token_length()
+    }
+
+    pub fn vocabulary_size(&self) -> usize {
+        self.postings.len()
+    }
+
+    pub fn collection_frequency(&self, term: &Term) -> usize {
+        self.postings.get(term).map_or(0, |documents| {
+            documents.values().map(|doc| doc.term_freq).sum()
+        })
+    }
+
     pub fn doc_id(&self, path: &Path) -> Option<DocId> {
         self.documents.doc_id(path)
     }
