@@ -24,7 +24,15 @@ impl TestSet {
         let evaluated_queries: Vec<EvaluatedQuery> = self
             .queries
             .par_iter()
-            .map(|query| evaluate_query(&self.ranking_algorithm, inverted_index, query, top_n))
+            .map(|query| {
+                evaluate_query(
+                    &self.ranking_algorithm,
+                    inverted_index,
+                    query,
+                    top_n,
+                    self.feedback_expansion,
+                )
+            })
             .collect();
         let queries = evaluated_queries
             .iter()
@@ -91,11 +99,15 @@ fn evaluate_query(
     inverted_index: &InvertedIndex,
     query: &TestQuery,
     top_n: usize,
+    feedback_expansion: bool,
 ) -> EvaluatedQuery {
-    let ranked_docs = ranking_algorithm
-        .rank(inverted_index, &query.query, top_n)
-        .map(|ranking| ranking.0)
-        .unwrap_or_default();
+    let ranked_docs = if feedback_expansion {
+        ranking_algorithm.rank_with_feedback(inverted_index, &query.query, top_n, top_n.min(3), 6)
+    } else {
+        ranking_algorithm.rank(inverted_index, &query.query, top_n)
+    }
+    .map(|ranking| ranking.0)
+    .unwrap_or_default();
 
     let metrics = evaluate_query_at_k(&ranked_docs, &query.relevant_docs, top_n);
     let groundedness = evaluate_groundedness_at_k(&ranked_docs, &query.groundedness_results, top_n);

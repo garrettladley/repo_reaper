@@ -1,4 +1,8 @@
-use std::{fs, path::Path, process::Command as ProcessCommand};
+use std::{
+    fs::{self, File},
+    path::Path,
+    process::Command as ProcessCommand,
+};
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -11,6 +15,11 @@ use repo_reaper_core::{
         metrics::{GroundednessResult, TestQuery, TokenEfficiencyEvaluation},
     },
     index::InvertedIndex,
+    query::QueryExpansionConfig,
+    ranking::{
+        RankingAlgo,
+        features::{JsonlFeatureSink, export_evaluation_features_to_sink},
+    },
     tokenizer::n_gram_transform,
 };
 
@@ -95,10 +104,14 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
     let raw_evaluation_data: RawEvaluationData = serde_json::from_str(&file_content)
         .context("failed to deserialize evaluation JSON data")?;
 
-    let evaluation_data = EvaluationData::parse_with_code_search(
+    let evaluation_data = EvaluationData::parse_with_options(
         raw_evaluation_data,
         config,
         args.ranking_algorithm.needs_fielded_index(),
+        QueryExpansionConfig {
+            controlled: args.query_expansion,
+            feedback: args.feedback_expansion,
+        },
     )
     .context("failed to parse evaluation data")?;
 
@@ -184,8 +197,19 @@ pub(crate) fn evaluate_training(args: &crate::Args, config: &ReaperConfig) -> Re
     let evaluation_report = TestSet {
         ranking_algorithm: args.ranking_algorithm.clone(),
         queries,
+        feedback_expansion: args.feedback_expansion,
     }
     .evaluate_report(&inverted_index, args.top_n);
+
+    if let Some(path) = &args.export_features {
+        write_feature_export(
+            path,
+            &inverted_index,
+            &args.ranking_algorithm,
+            &evaluation_data,
+            args.top_n,
+        )?;
+    }
 
     if let Some(baseline_path) = &args.eval_compare {
         let baseline = read_evaluation_baseline(baseline_path)?;
@@ -285,6 +309,27 @@ fn read_evaluation_baseline(path: &Path) -> Result<EvaluationReport> {
             token_efficiency: TokenEfficiencyEvaluation::default(),
         },
     })
+}
+
+fn write_feature_export(
+    path: &Path,
+    inverted_index: &InvertedIndex,
+    ranking_algorithm: &RankingAlgo,
+    evaluation_data: &EvaluationData,
+    top_n: usize,
+) -> Result<()> {
+    let file = File::create(path)
+        .with_context(|| format!("failed to create feature export at {}", path.display()))?;
+    let mut sink = JsonlFeatureSink::new(file);
+    export_evaluation_features_to_sink(
+        &mut sink,
+        inverted_index,
+        ranking_algorithm,
+        evaluation_data,
+        top_n,
+    )
+    .context("failed to write feature export")?;
+    Ok(())
 }
 
 fn compare_evaluation_reports(

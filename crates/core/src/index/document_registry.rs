@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{index::DocumentField, tokenizer::FileType};
+use crate::{
+    index::{DocumentField, StaticQualitySignals},
+    tokenizer::FileType,
+};
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
@@ -28,10 +31,13 @@ pub struct DocumentMetadata {
     pub file_size_bytes: u64,
     pub file_type: FileType,
     pub field_lengths: HashMap<DocumentField, usize>,
+    #[serde(default)]
+    pub quality_signals: StaticQualitySignals,
 }
 
 impl DocumentMetadata {
     fn new(id: DocId, path: PathBuf, token_length: usize, file_size_bytes: u64) -> Self {
+        let quality_signals = StaticQualitySignals::analyze(&path, "", file_size_bytes);
         Self::new_with_fields(
             id,
             path,
@@ -39,6 +45,7 @@ impl DocumentMetadata {
             file_size_bytes,
             FileType::UnknownText,
             HashMap::new(),
+            quality_signals,
         )
     }
 
@@ -49,6 +56,7 @@ impl DocumentMetadata {
         file_size_bytes: u64,
         file_type: FileType,
         field_lengths: HashMap<DocumentField, usize>,
+        quality_signals: StaticQualitySignals,
     ) -> Self {
         Self {
             id,
@@ -57,6 +65,7 @@ impl DocumentMetadata {
             file_size_bytes,
             file_type,
             field_lengths,
+            quality_signals,
         }
     }
 
@@ -87,8 +96,9 @@ pub trait DocumentCatalog {
         file_size_bytes: u64,
         file_type: FileType,
         field_lengths: HashMap<DocumentField, usize>,
+        quality_signals: StaticQualitySignals,
     ) -> DocId {
-        let _ = (file_type, field_lengths);
+        let _ = (file_type, field_lengths, quality_signals);
         self.insert_or_update(path, token_length, file_size_bytes)
     }
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
@@ -145,6 +155,7 @@ impl DocumentCatalog for DocumentRegistry {
         file_size_bytes: u64,
         file_type: FileType,
         field_lengths: HashMap<DocumentField, usize>,
+        quality_signals: StaticQualitySignals,
     ) -> DocId {
         if let Some(&id) = self.path_to_id.get(&path) {
             if let Some(existing) = self.documents.get_mut(&id) {
@@ -157,6 +168,7 @@ impl DocumentCatalog for DocumentRegistry {
                     file_size_bytes,
                     file_type,
                     field_lengths,
+                    quality_signals,
                 );
             }
             return id;
@@ -171,6 +183,7 @@ impl DocumentCatalog for DocumentRegistry {
             file_size_bytes,
             file_type,
             field_lengths,
+            quality_signals,
         );
         self.path_to_id.insert(metadata.path.clone(), id);
         self.total_token_length += token_length as u64;

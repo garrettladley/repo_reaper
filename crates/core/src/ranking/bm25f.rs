@@ -6,7 +6,7 @@ use rayon::iter::{ParallelBridge, ParallelIterator};
 use crate::{
     error::RankingError,
     index::{DocId, DocumentField, PostingList, RankedIndexReader, Term, TermDocument},
-    query::{AnalyzedQuery, QueryTerm},
+    query::{AnalyzedQuery, QueryIntent, QueryTerm},
     ranking::{scorer::Scorer, utils::idf},
 };
 
@@ -37,6 +37,58 @@ impl BM25FHyperParams {
     pub fn field_weight(&self, field: DocumentField) -> f64 {
         self.field_weights.get(&field).copied().unwrap_or(1.0)
     }
+
+    pub fn intent_field_weight(&self, field: DocumentField, intent: QueryIntent) -> f64 {
+        let base = self.field_weight(field);
+        let multiplier = match intent {
+            QueryIntent::Path => match field {
+                DocumentField::FileName => 1.5,
+                DocumentField::RelativePath => 2.2,
+                DocumentField::Extension => 1.4,
+                DocumentField::Content => 0.45,
+                DocumentField::Identifier
+                | DocumentField::Comment
+                | DocumentField::StringLiteral => 0.6,
+            },
+            QueryIntent::Identifier => match field {
+                DocumentField::FileName => 1.15,
+                DocumentField::RelativePath => 1.1,
+                DocumentField::Identifier => 1.7,
+                DocumentField::Content => 0.75,
+                DocumentField::Extension
+                | DocumentField::Comment
+                | DocumentField::StringLiteral => 0.8,
+            },
+            QueryIntent::ErrorMessage => match field {
+                DocumentField::StringLiteral => 2.0,
+                DocumentField::Content => 1.25,
+                DocumentField::Comment => 0.9,
+                DocumentField::FileName
+                | DocumentField::RelativePath
+                | DocumentField::Extension
+                | DocumentField::Identifier => 0.7,
+            },
+            QueryIntent::Config => match field {
+                DocumentField::FileName => 1.5,
+                DocumentField::RelativePath => 1.8,
+                DocumentField::Extension => 1.7,
+                DocumentField::Identifier => 1.25,
+                DocumentField::Content => 0.9,
+                DocumentField::Comment | DocumentField::StringLiteral => 0.8,
+            },
+            QueryIntent::NaturalLanguage => match field {
+                DocumentField::Content => 1.1,
+                DocumentField::Comment => 1.35,
+                DocumentField::Identifier => 0.9,
+                DocumentField::FileName
+                | DocumentField::RelativePath
+                | DocumentField::Extension
+                | DocumentField::StringLiteral => 0.8,
+            },
+        };
+
+        base * multiplier
+    }
 }
 
 pub fn get_configuration() -> Result<BM25FHyperParams, RankingError> {
@@ -48,7 +100,12 @@ pub struct BM25F {
 }
 
 impl BM25F {
-    pub fn weighted_term_frequency<I>(&self, index: &I, term_doc: &TermDocument) -> f64
+    pub fn weighted_term_frequency<I>(
+        &self,
+        index: &I,
+        term_doc: &TermDocument,
+        intent: QueryIntent,
+    ) -> f64
     where
         I: RankedIndexReader,
     {
@@ -73,7 +130,7 @@ impl BM25F {
                 let normalized_tf = tf
                     / (1.0 - self.hyper_params.b
                         + self.hyper_params.b * field_length / avg_field_length);
-                self.hyper_params.field_weight(field) * normalized_tf
+                self.hyper_params.intent_field_weight(field, intent) * normalized_tf
             })
             .sum()
     }
@@ -92,7 +149,7 @@ impl Scorer for BM25F {
     fn score<I, P>(
         &self,
         index: &I,
-        _: &AnalyzedQuery,
+        query: &AnalyzedQuery,
         _: &Term,
         query_term: QueryTerm,
         documents: &P,
@@ -108,7 +165,7 @@ impl Scorer for BM25F {
             .iter()
             .par_bridge()
             .for_each(|(doc_id, term_doc)| {
-                let weighted_tf = self.weighted_term_frequency(index, term_doc);
+                let weighted_tf = self.weighted_term_frequency(index, term_doc, query.intent());
                 let score = self.score_weighted_tf(query_term.weight, idf, weighted_tf);
 
                 *scores.entry(doc_id).or_insert(0.0) += score;
@@ -130,7 +187,7 @@ mod tests {
     use crate::{
         config::Config,
         index::InvertedIndex,
-        query::AnalyzedQuery,
+        query::{AnalyzedQuery, QueryIntent},
         ranking::{BM25HyperParams, RankingAlgo},
     };
 
@@ -204,7 +261,7 @@ mod tests {
         let weighted_tf = BM25F {
             hyper_params: BM25FHyperParams::code_search_defaults(),
         }
-        .weighted_term_frequency(&index, term_doc);
+        .weighted_term_frequency(&index, term_doc, QueryIntent::Identifier);
 
         assert!(weighted_tf > term_doc.term_freq as f64);
     }

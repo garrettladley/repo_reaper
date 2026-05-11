@@ -21,18 +21,24 @@ use repo_reaper_core::{
         inverted_file::InvertedFileLayout,
         snapshot::{load_snapshot, write_snapshot},
     },
-    query::AnalyzedQuery,
+    query::{AnalyzedQuery, QueryExpansionConfig},
     ranking::RankingAlgo,
     tokenizer::n_gram_transform,
 };
+
+pub(crate) struct LiveSearchOptions {
+    pub(crate) top_n: usize,
+    pub(crate) query_expansion: bool,
+    pub(crate) feedback_expansion: bool,
+    pub(crate) index_dir: Option<PathBuf>,
+    pub(crate) reindex: bool,
+}
 
 pub(crate) fn run(
     directory: PathBuf,
     config: Arc<ReaperConfig>,
     algo: RankingAlgo,
-    top_n: usize,
-    index_dir: Option<PathBuf>,
-    reindex: bool,
+    options: LiveSearchOptions,
 ) -> Result<()> {
     let config_clone = Arc::clone(&config);
     let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
@@ -41,7 +47,7 @@ pub(crate) fn run(
     println!("Indexing files in {}", directory.display());
 
     let fielded = algo.needs_fielded_index();
-    let index = if let Some(index_dir) = index_dir.as_ref().filter(|_| !reindex) {
+    let index = if let Some(index_dir) = options.index_dir.as_ref().filter(|_| !options.reindex) {
         match load_snapshot(index_dir, &directory, &config) {
             Ok(mut index) => {
                 let events = read_events(index_dir).context("failed to read index event log")?;
@@ -59,7 +65,7 @@ pub(crate) fn run(
 
     let engine = SearchEngine::new(index);
 
-    if let Some(index_dir) = &index_dir {
+    if let Some(index_dir) = &options.index_dir {
         engine.with_read(|index| {
             write_snapshot(index, index_dir, &directory, &config)?;
             InvertedFileLayout::write(index, index_dir)?;
@@ -76,9 +82,16 @@ pub(crate) fn run(
         transformer,
         Arc::clone(&config),
         fielded,
-        index_dir,
+        options.index_dir,
     );
-    run_repl(config, algo, top_n, engine)
+    run_repl(
+        config,
+        algo,
+        options.top_n,
+        engine,
+        options.query_expansion,
+        options.feedback_expansion,
+    )
 }
 
 fn build_index(
@@ -184,6 +197,8 @@ fn run_repl(
     algo: RankingAlgo,
     top_n: usize,
     engine: SearchEngine,
+    query_expansion: bool,
+    feedback_expansion: bool,
 ) -> Result<()> {
     loop {
         println!("Enter a query: ");
@@ -198,12 +213,24 @@ fn run_repl(
         }
 
         let query = if algo.needs_fielded_index() {
-            AnalyzedQuery::new_code_search(&query, &config)
+            AnalyzedQuery::new_code_search_with_expansion(
+                &query,
+                &config,
+                QueryExpansionConfig {
+                    controlled: query_expansion,
+                    feedback: feedback_expansion,
+                },
+            )
         } else {
             AnalyzedQuery::new(&query, &config)
         };
 
-        let ranking = engine.search(&algo, &query, top_n)?;
+        let ranking = if feedback_expansion {
+            engine
+                .with_read(|index| algo.rank_with_feedback(index, &query, top_n, top_n.min(3), 6))?
+        } else {
+            engine.search(&algo, &query, top_n)?
+        };
 
         log_query(&query, &ranking, &algo, top_n)?;
 

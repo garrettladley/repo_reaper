@@ -200,6 +200,7 @@ impl IndexSnapshot {
                 metadata.file_size_bytes,
                 metadata.file_type,
                 metadata.field_lengths,
+                metadata.quality_signals,
             );
         }
 

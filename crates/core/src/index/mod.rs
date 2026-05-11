@@ -6,6 +6,7 @@ pub mod event_log;
 pub mod field;
 pub mod inverted_file;
 pub mod inverted_index;
+pub mod quality;
 pub mod reader;
 pub mod skips;
 pub mod snapshot;
@@ -23,5 +24,6 @@ pub use inverted_index::{
     CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, PositionList, TermDocument,
     TermFrequencySummary,
 };
+pub use quality::StaticQualitySignals;
 pub use reader::{OwnedPostingList, PostingList, RankedIndexReader};
 pub use term::Term;

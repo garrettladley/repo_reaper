@@ -59,6 +59,15 @@ struct Args {
     /// Print corpus statistics for the indexed directory and exit
     #[clap(long, default_value = "false")]
     stats: bool,
+    /// Enable controlled abbreviation query expansion
+    #[clap(long, default_value = "false")]
+    query_expansion: bool,
+    /// Enable experimental pseudo-relevance feedback expansion
+    #[clap(long, default_value = "false")]
+    feedback_expansion: bool,
+    /// Write ranking feature export JSONL while evaluating
+    #[clap(long)]
+    export_features: Option<PathBuf>,
     /// Directory for ranked index snapshots and update event logs
     #[clap(long)]
     index_dir: Option<PathBuf>,
@@ -109,9 +118,13 @@ fn main() -> Result<()> {
         args.directory,
         config,
         args.ranking_algorithm,
-        args.top_n,
-        args.index_dir,
-        args.reindex,
+        live_search::LiveSearchOptions {
+            top_n: args.top_n,
+            query_expansion: args.query_expansion,
+            feedback_expansion: args.feedback_expansion,
+            index_dir: args.index_dir,
+            reindex: args.reindex,
+        },
     )
 }
 

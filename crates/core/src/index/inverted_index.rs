@@ -9,6 +9,7 @@ use crate::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
         document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
         field::DocumentField,
+        quality::StaticQualitySignals,
         term::Term,
     },
     ranking::idf,
@@ -138,6 +139,7 @@ struct ProcessedDocument {
     token_length: usize,
     file_size_bytes: u64,
     file_type: FileType,
+    quality_signals: StaticQualitySignals,
 }
 
 #[cfg(test)]
@@ -314,6 +316,7 @@ where
             0,
             document.file_type,
             document.field_lengths.clone(),
+            document.quality_signals.clone(),
         );
         Self::postings_for_document(doc_id, &document)
     }
@@ -334,6 +337,11 @@ where
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type: FileType::UnknownText,
+            quality_signals: StaticQualitySignals::analyze(
+                &document.path,
+                &document.content,
+                document.file_size_bytes,
+            ),
         }
     }
 
@@ -399,6 +407,11 @@ where
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type,
+            quality_signals: StaticQualitySignals::analyze(
+                &document.path,
+                &document.content,
+                document.file_size_bytes,
+            ),
         }
     }
 
@@ -453,6 +466,7 @@ where
             document.file_size_bytes,
             document.file_type,
             document.field_lengths.clone(),
+            document.quality_signals.clone(),
         );
 
         for (term, doc_map) in Self::postings_for_document(doc_id, &document) {

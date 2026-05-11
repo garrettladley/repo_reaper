@@ -2,6 +2,8 @@ pub mod bm25;
 pub mod bm25f;
 pub mod cosine_similarity;
 pub mod explanation;
+pub mod features;
+pub mod feedback;
 pub mod proximity;
 pub mod query_likelihood;
 pub mod scorer;
@@ -13,7 +15,7 @@ pub use bm25f::{BM25F, BM25FHyperParams};
 pub use cosine_similarity::CosineSimilarity;
 pub use explanation::{
     FieldContribution, ScoreExplanation, ScoreWithExplanation, ScoredWithExplanations,
-    TermExplanation,
+    StaticQualityContribution, TermExplanation,
 };
 pub use proximity::ProximityConfig;
 pub use query_likelihood::{QueryLikelihood, QueryLikelihoodParams, QueryLikelihoodSmoothing};
