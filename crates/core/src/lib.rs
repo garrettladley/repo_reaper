@@ -1,3 +1,4 @@
+pub mod code_intelligence;
 pub mod config;
 pub mod error;
 pub mod evaluation;

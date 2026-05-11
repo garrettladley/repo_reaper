@@ -7,7 +7,9 @@ use crate::{
     config::Config,
     index::{
         corpus::{FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, SkippedDocument},
-        document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry},
+        document_registry::{
+            DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry, FieldSpan,
+        },
         field::DocumentField,
         term::Term,
     },
@@ -89,6 +91,7 @@ struct ProcessedDocument {
     term_frequencies: HashMap<Term, u32>,
     field_term_frequencies: HashMap<DocumentField, HashMap<Term, u32>>,
     field_lengths: HashMap<DocumentField, usize>,
+    field_spans: Vec<FieldSpan>,
     token_length: usize,
     file_size_bytes: u64,
     file_type: FileType,
@@ -267,6 +270,7 @@ where
             term_frequencies,
             field_term_frequencies: HashMap::new(),
             field_lengths: HashMap::new(),
+            field_spans: Vec::new(),
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type: FileType::UnknownText,
@@ -285,7 +289,7 @@ where
         let mut term_frequencies = HashMap::new();
 
         for field in DocumentField::ALL {
-            let Some(raw_value) = raw_fields.get(&field) else {
+            let Some(raw_value) = raw_fields.values.get(&field) else {
                 continue;
             };
             let tokens = profile.analyze(field.analyzer_field(), raw_value, config);
@@ -313,6 +317,7 @@ where
             term_frequencies,
             field_term_frequencies,
             field_lengths,
+            field_spans: raw_fields.spans,
             token_length,
             file_size_bytes: document.file_size_bytes,
             file_type,
@@ -354,12 +359,13 @@ where
         postings: &mut HashMap<Term, HashMap<DocId, TermDocument>>,
         document: ProcessedDocument,
     ) {
-        let doc_id = registry.insert_or_update_with_fields(
+        let doc_id = registry.insert_or_update_with_field_spans(
             document.path.clone(),
             document.token_length,
             document.file_size_bytes,
             document.file_type,
             document.field_lengths.clone(),
+            document.field_spans.clone(),
         );
 
         for (term, doc_map) in Self::postings_for_document(doc_id, &document) {
@@ -533,8 +539,40 @@ where
     }
 }
 
-fn raw_document_fields(path: &Path, content: &str) -> HashMap<DocumentField, String> {
-    let mut fields = HashMap::new();
+#[derive(Debug, Default)]
+struct RawDocumentFields {
+    values: HashMap<DocumentField, String>,
+    spans: Vec<FieldSpan>,
+}
+
+impl RawDocumentFields {
+    fn insert(&mut self, field: DocumentField, value: String) {
+        self.values.insert(field, value);
+    }
+
+    fn extend_field(&mut self, field: DocumentField, values: impl IntoIterator<Item = String>) {
+        let mut values = values.into_iter().filter(|value| !value.trim().is_empty());
+        let Some(first) = values.next() else {
+            return;
+        };
+        let field_value = self.values.entry(field).or_default();
+        if !field_value.is_empty() {
+            field_value.push('\n');
+        }
+        field_value.push_str(&first);
+        for value in values {
+            field_value.push('\n');
+            field_value.push_str(&value);
+        }
+    }
+
+    fn push_span(&mut self, span: FieldSpan) {
+        self.spans.push(span);
+    }
+}
+
+fn raw_document_fields(path: &Path, content: &str) -> RawDocumentFields {
+    let mut fields = RawDocumentFields::default();
 
     if let Some(file_name) = path.file_name().and_then(|name| name.to_str()) {
         fields.insert(DocumentField::FileName, file_name.to_string());
@@ -554,11 +592,28 @@ fn raw_document_fields(path: &Path, content: &str) -> HashMap<DocumentField, Str
         DocumentField::Identifier,
         extract_identifier_lexemes(content).join(" "),
     );
-    fields.insert(DocumentField::Comment, extract_comments(content).join("\n"));
-    fields.insert(
-        DocumentField::StringLiteral,
-        extract_string_literals(content).join("\n"),
-    );
+
+    let parser_fields = crate::code_intelligence::extract(FileType::detect(path), path, content)
+        .ok()
+        .flatten();
+    if let Some(parser_fields) = parser_fields {
+        for extracted in parser_fields.fields() {
+            fields.extend_field(extracted.field, [extracted.text.clone()]);
+            if let Some(span) = extracted.span {
+                fields.push_span(FieldSpan {
+                    field: extracted.field,
+                    start_byte: span.start,
+                    end_byte: span.end,
+                });
+            }
+        }
+    } else {
+        fields.extend_field(DocumentField::Comment, extract_comments(content));
+        fields.extend_field(
+            DocumentField::StringLiteral,
+            extract_string_literals(content),
+        );
+    }
 
     fields
 }
@@ -1017,6 +1072,49 @@ mod tests {
         assert_eq!(term_doc.field_term_freq(DocumentField::FileName), 1);
         assert_eq!(term_doc.field_term_freq(DocumentField::RelativePath), 1);
         assert_eq!(term_doc.field_term_freq(DocumentField::Content), 0);
+    }
+
+    #[cfg(feature = "tree-sitter")]
+    #[test]
+    fn fielded_index_populates_rust_tree_sitter_symbol_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        write_temp_file(
+            dir.path(),
+            "src/bm25.rs",
+            r#"
+use crate::ranking::Score;
+
+// ranking helper
+pub struct BM25;
+pub enum RankingMode { Fast }
+pub trait Scorer { fn bm25_score(&self) -> Score; }
+impl Scorer for BM25 {
+    fn bm25_score(&self) -> Score {
+        "symbol literal".into()
+    }
+}
+"#,
+        );
+
+        let index = InvertedIndex::new_fielded(dir.path(), &test_config(), Some(dir.path()));
+        let doc_id = index.doc_id(Path::new("src/bm25.rs")).unwrap();
+        let bm25_docs = index.get_postings(&Term("bm25".to_string())).unwrap();
+        let bm25_doc = bm25_docs.get(&doc_id).unwrap();
+        let score_docs = index.get_postings(&Term("score".to_string())).unwrap();
+        let score_doc = score_docs.get(&doc_id).unwrap();
+        let metadata = index.document(doc_id).unwrap();
+
+        assert!(bm25_doc.field_term_freq(DocumentField::Symbol) > 0);
+        assert!(score_doc.field_term_freq(DocumentField::Symbol) > 0);
+        assert!(metadata.field_length(DocumentField::Import) > 0);
+        assert!(metadata.field_length(DocumentField::Comment) > 0);
+        assert!(metadata.field_length(DocumentField::StringLiteral) > 0);
+        assert!(
+            metadata
+                .field_spans
+                .iter()
+                .any(|span| span.field == DocumentField::Symbol && span.start_byte < span.end_byte)
+        );
     }
 
     #[test]

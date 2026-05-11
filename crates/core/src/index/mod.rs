@@ -8,7 +8,9 @@ pub use corpus::{
     FileSystemIndexCorpus, IndexCorpus, IndexCorpusDocument, IndexCorpusScan, IndexSkipReason,
     SkippedDocument,
 };
-pub use document_registry::{DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry};
+pub use document_registry::{
+    DocId, DocumentCatalog, DocumentMetadata, DocumentRegistry, FieldSpan,
+};
 pub use field::DocumentField;
 pub use inverted_index::{
     CorpusStats, IndexBuildReport, IndexBuildResult, InvertedIndex, TermDocument,

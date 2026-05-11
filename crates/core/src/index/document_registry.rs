@@ -19,6 +19,13 @@ impl DocId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldSpan {
+    pub field: DocumentField,
+    pub start_byte: usize,
+    pub end_byte: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocumentMetadata {
     pub id: DocId,
     pub path: PathBuf,
@@ -26,6 +33,7 @@ pub struct DocumentMetadata {
     pub file_size_bytes: u64,
     pub file_type: FileType,
     pub field_lengths: HashMap<DocumentField, usize>,
+    pub field_spans: Vec<FieldSpan>,
 }
 
 impl DocumentMetadata {
@@ -37,6 +45,7 @@ impl DocumentMetadata {
             file_size_bytes,
             FileType::UnknownText,
             HashMap::new(),
+            Vec::new(),
         )
     }
 
@@ -47,6 +56,7 @@ impl DocumentMetadata {
         file_size_bytes: u64,
         file_type: FileType,
         field_lengths: HashMap<DocumentField, usize>,
+        field_spans: Vec<FieldSpan>,
     ) -> Self {
         Self {
             id,
@@ -55,6 +65,7 @@ impl DocumentMetadata {
             file_size_bytes,
             file_type,
             field_lengths,
+            field_spans,
         }
     }
 
@@ -87,6 +98,18 @@ pub trait DocumentCatalog {
         field_lengths: HashMap<DocumentField, usize>,
     ) -> DocId {
         let _ = (file_type, field_lengths);
+        self.insert_or_update(path, token_length, file_size_bytes)
+    }
+    fn insert_or_update_with_field_spans(
+        &mut self,
+        path: PathBuf,
+        token_length: usize,
+        file_size_bytes: u64,
+        file_type: FileType,
+        field_lengths: HashMap<DocumentField, usize>,
+        field_spans: Vec<FieldSpan>,
+    ) -> DocId {
+        let _ = (file_type, field_lengths, field_spans);
         self.insert_or_update(path, token_length, file_size_bytes)
     }
     fn remove(&mut self, path: &Path) -> Option<DocumentMetadata>;
@@ -150,6 +173,7 @@ impl DocumentCatalog for DocumentRegistry {
                     file_size_bytes,
                     file_type,
                     field_lengths,
+                    Vec::new(),
                 );
             }
             return id;
@@ -164,6 +188,50 @@ impl DocumentCatalog for DocumentRegistry {
             file_size_bytes,
             file_type,
             field_lengths,
+            Vec::new(),
+        );
+        self.path_to_id.insert(metadata.path.clone(), id);
+        self.total_token_length += token_length as u64;
+        self.documents.insert(id, metadata);
+        id
+    }
+
+    fn insert_or_update_with_field_spans(
+        &mut self,
+        path: PathBuf,
+        token_length: usize,
+        file_size_bytes: u64,
+        file_type: FileType,
+        field_lengths: HashMap<DocumentField, usize>,
+        field_spans: Vec<FieldSpan>,
+    ) -> DocId {
+        if let Some(&id) = self.path_to_id.get(&path) {
+            if let Some(existing) = self.documents.get_mut(&id) {
+                self.total_token_length -= existing.token_length as u64;
+                self.total_token_length += token_length as u64;
+                *existing = DocumentMetadata::new_with_fields(
+                    id,
+                    path,
+                    token_length,
+                    file_size_bytes,
+                    file_type,
+                    field_lengths,
+                    field_spans,
+                );
+            }
+            return id;
+        }
+
+        let id = DocId(self.next_id);
+        self.next_id += 1;
+        let metadata = DocumentMetadata::new_with_fields(
+            id,
+            path,
+            token_length,
+            file_size_bytes,
+            file_type,
+            field_lengths,
+            field_spans,
         );
         self.path_to_id.insert(metadata.path.clone(), id);
         self.total_token_length += token_length as u64;

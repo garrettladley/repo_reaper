@@ -28,8 +28,11 @@ impl BM25FHyperParams {
                 (DocumentField::Extension, 0.25),
                 (DocumentField::Content, 1.0),
                 (DocumentField::Identifier, 3.0),
+                (DocumentField::Symbol, 4.0),
+                (DocumentField::Import, 2.0),
                 (DocumentField::Comment, 0.8),
                 (DocumentField::StringLiteral, 0.8),
+                (DocumentField::Frontmatter, 1.2),
             ]),
         }
     }
