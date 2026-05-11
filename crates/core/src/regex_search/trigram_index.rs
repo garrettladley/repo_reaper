@@ -7,7 +7,7 @@ use std::{
 use super::{
     FileSystemCorpus, LiteralSearchResult, MmapRegexPostings, RegexCandidatePlan,
     RegexCandidateSelection, RegexCorpus, RegexPostingsError, RegexSearchMatch, Trigram,
-    line_range_for_match, planner,
+    candidate_mask::RegexCandidateMask, line_range_for_match, planner,
 };
 use crate::index::{
     DocId,
@@ -18,6 +18,7 @@ use crate::index::{
 pub struct TrigramIndex<C = FileSystemCorpus> {
     corpus: C,
     postings: HashMap<Trigram, BTreeSet<DocId>>,
+    masks: RegexCandidateMask,
     documents: DocumentRegistry,
     doc_ids_by_path: Vec<DocId>,
 }
@@ -35,6 +36,7 @@ where
     pub fn with_corpus(corpus: C) -> Self {
         let mut documents = DocumentRegistry::new();
         let mut postings: HashMap<Trigram, BTreeSet<DocId>> = HashMap::new();
+        let mut masks = RegexCandidateMask::default();
         let mut corpus_documents = corpus.documents();
         corpus_documents.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -42,6 +44,7 @@ where
             insert_document(
                 &mut documents,
                 &mut postings,
+                &mut masks,
                 document.path.clone(),
                 &document.content,
             );
@@ -52,6 +55,7 @@ where
         Self {
             corpus,
             postings,
+            masks,
             documents,
             doc_ids_by_path,
         }
@@ -84,6 +88,7 @@ where
             let doc_id = insert_document(
                 &mut self.documents,
                 &mut self.postings,
+                &mut self.masks,
                 path.to_path_buf(),
                 &content,
             );
@@ -109,6 +114,7 @@ where
             postings.remove(&metadata.id);
         }
         self.postings.retain(|_, postings| !postings.is_empty());
+        self.masks.remove_document(metadata.id);
         Some(metadata.id)
     }
 
@@ -124,6 +130,21 @@ where
 
     pub fn candidates_for_regex_plan(&self, plan: &RegexCandidatePlan) -> BTreeSet<DocId> {
         self.planned_candidates_for_regex_plan(plan).candidates
+    }
+
+    pub fn experimental_masked_candidates_for_regex(&self, pattern: &str) -> BTreeSet<DocId> {
+        let plan = RegexCandidatePlan::for_pattern(pattern);
+        let plain_candidates = self.candidates_for_regex_plan(&plan);
+        if is_plain_literal_plan(pattern, &plan) {
+            self.masks.filter_literal(pattern, &plain_candidates)
+        } else {
+            plain_candidates
+        }
+    }
+
+    pub fn experimental_masked_candidates_for_literal(&self, literal: &str) -> BTreeSet<DocId> {
+        let plain_candidates = self.candidates_for_literal(literal);
+        self.masks.filter_literal(literal, &plain_candidates)
     }
 
     pub fn planned_candidates_for_regex(&self, pattern: &str) -> RegexCandidateSelection {
@@ -179,6 +200,7 @@ where
 fn insert_document(
     documents: &mut DocumentRegistry,
     postings: &mut HashMap<Trigram, BTreeSet<DocId>>,
+    masks: &mut RegexCandidateMask,
     path: std::path::PathBuf,
     content: &str,
 ) -> DocId {
@@ -187,6 +209,7 @@ fn insert_document(
     for trigram in trigrams(content) {
         postings.entry(trigram).or_default().insert(doc_id);
     }
+    masks.add_document(doc_id, content);
 
     doc_id
 }
@@ -213,6 +236,14 @@ pub fn trigrams(content: &str) -> Vec<Trigram> {
 
 fn trigram_count(content: &str) -> usize {
     content.chars().count().saturating_sub(2)
+}
+
+fn is_plain_literal_plan(pattern: &str, plan: &RegexCandidatePlan) -> bool {
+    let RegexCandidatePlan::And(plan_trigrams) = plan else {
+        return false;
+    };
+
+    *plan_trigrams == trigrams(pattern)
 }
 
 fn verified_literal_matches(path: &Path, content: &str, literal: &str) -> Vec<RegexSearchMatch> {
