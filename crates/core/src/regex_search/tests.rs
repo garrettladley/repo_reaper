@@ -7,7 +7,9 @@ use regex::Regex;
 
 use super::{
     CorpusDocument, MmapRegexPostings, RegexCandidatePlan, RegexCorpus, RegexSearchEngine, Trigram,
-    TrigramIndex, trigrams,
+    TrigramIndex,
+    sparse_ngram::{sparse_covering_ngrams, sparse_ngrams},
+    trigrams,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -185,6 +187,49 @@ fn trigrams_include_punctuation_whitespace_and_preserve_case() {
 }
 
 #[test]
+fn sparse_ngrams_are_deterministic() {
+    let first = sparse_ngram_values("foo_bar_baz");
+    let second = sparse_ngram_values("foo_bar_baz");
+
+    assert_eq!(first, second);
+}
+
+#[test]
+fn sparse_ngrams_are_stable_for_code_like_literals() {
+    let ngrams = sparse_ngram_values("MAX_FILE_SIZE");
+
+    assert_eq!(
+        ngrams,
+        [
+            "AX", "AX_", "E_", "E_S", "FI", "FIL", "FILE", "FILE_S", "IL", "ILE", "IZ", "IZE",
+            "LE", "LE_", "LE_S", "MA", "MAX", "SI", "SIZ", "X_", "X_F", "X_FI", "ZE", "_F", "_FI",
+            "_S", "_SI", "_SIZ"
+        ]
+    );
+}
+
+#[test]
+fn sparse_covering_ngrams_use_fewer_query_terms_than_classic_trigrams() {
+    let covering = sparse_covering_ngram_values("MAX_FILE_SIZE");
+
+    assert_eq!(covering, ["E_S", "ILE", "MAX", "SIZ", "X_FI", "ZE"]);
+    assert!(covering.len() < trigrams("MAX_FILE_SIZE").len());
+}
+
+#[test]
+fn sparse_ngrams_return_empty_for_single_character_inputs() {
+    assert!(sparse_ngrams("").is_empty());
+    assert!(sparse_ngrams("a").is_empty());
+}
+
+#[test]
+fn sparse_ngrams_keep_short_bigram_inputs_selective() {
+    let ngrams = sparse_ngram_values("ab");
+
+    assert_eq!(ngrams, ["ab"]);
+}
+
+#[test]
 fn index_maps_every_indexed_doc_id_back_to_path() {
     let first = PathBuf::from("a.rs");
     let second = PathBuf::from("b.rs");
@@ -315,6 +360,48 @@ fn experimental_masks_keep_repeated_overlapping_trigram_matches() {
     let masked_candidates = index.experimental_masked_candidates_for_literal("aaaaa");
 
     assert!(masked_candidates.contains(&index.doc_id(&matching).unwrap()));
+}
+
+#[test]
+fn experimental_sparse_ngram_candidates_are_separate_from_default_candidates() {
+    let matching = PathBuf::from("match.rs");
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "let value = MAX_FILE_SIZE;"),
+        (
+            "classic_false_positive.rs",
+            "MAX AX_ X_F _FI FIL ILE LE_ E_S _SI SIZ IZE",
+        ),
+        ("missing.rs", "let value = MIN_FILE_SIZE;"),
+    ]));
+
+    let classic_candidates = index.candidates_for_literal("MAX_FILE_SIZE");
+    let sparse_candidates = index.experimental_sparse_ngram_candidates_for_literal("MAX_FILE_SIZE");
+
+    assert_eq!(classic_candidates.len(), 2);
+    assert_eq!(sparse_candidates.len(), 1);
+    assert!(sparse_candidates.contains(&index.doc_id(&matching).unwrap()));
+}
+
+#[test]
+fn experimental_sparse_ngram_comparison_reports_query_and_index_costs() {
+    let index = TrigramIndex::with_corpus(TestCorpus::new(&[
+        ("match.rs", "let value = MAX_FILE_SIZE;"),
+        (
+            "classic_false_positive.rs",
+            "MAX AX_ X_F _FI FIL ILE LE_ E_S _SI SIZ IZE",
+        ),
+        ("missing.rs", "let value = MIN_FILE_SIZE;"),
+    ]));
+
+    let comparison = index.experimental_sparse_ngram_comparison_for_literal("MAX_FILE_SIZE");
+
+    assert_eq!(comparison.classic_candidate_count, 2);
+    assert_eq!(comparison.sparse_candidate_count, 1);
+    assert_eq!(comparison.classic_posting_lookups, 11);
+    assert_eq!(comparison.sparse_posting_lookups, 6);
+    assert_eq!(comparison.classic_update_token_count, 11);
+    assert_eq!(comparison.sparse_update_token_count, 28);
+    assert!(comparison.sparse_index_key_count > comparison.classic_index_key_count);
 }
 
 #[test]
@@ -697,6 +784,20 @@ fn write_file(root: &Path, path: &str, content: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(path, content)
+}
+
+fn sparse_ngram_values(content: &str) -> Vec<String> {
+    sparse_ngrams(content)
+        .iter()
+        .map(|ngram| ngram.0.clone())
+        .collect()
+}
+
+fn sparse_covering_ngram_values(content: &str) -> Vec<String> {
+    sparse_covering_ngrams(content)
+        .iter()
+        .map(|ngram| ngram.0.clone())
+        .collect()
 }
 
 fn plan_trigrams(plan: &RegexCandidatePlan) -> Vec<String> {

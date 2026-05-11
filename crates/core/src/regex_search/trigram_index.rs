@@ -5,9 +5,12 @@ use std::{
 };
 
 use super::{
-    FileSystemCorpus, LiteralSearchResult, MmapRegexPostings, RegexCandidatePlan,
-    RegexCandidateSelection, RegexCorpus, RegexPostingsError, RegexSearchMatch, Trigram,
-    candidate_mask::RegexCandidateMask, line_range_for_match, planner,
+    ExperimentalSparseNgramComparison, FileSystemCorpus, LiteralSearchResult, MmapRegexPostings,
+    RegexCandidatePlan, RegexCandidateSelection, RegexCorpus, RegexPostingsError, RegexSearchMatch,
+    Trigram,
+    candidate_mask::RegexCandidateMask,
+    line_range_for_match, planner,
+    sparse_ngram::{SparseNgram, sparse_covering_ngrams, sparse_ngrams},
 };
 use crate::index::{
     DocId,
@@ -18,6 +21,7 @@ use crate::index::{
 pub struct TrigramIndex<C = FileSystemCorpus> {
     corpus: C,
     postings: HashMap<Trigram, BTreeSet<DocId>>,
+    sparse_postings: HashMap<SparseNgram, BTreeSet<DocId>>,
     masks: RegexCandidateMask,
     documents: DocumentRegistry,
     doc_ids_by_path: Vec<DocId>,
@@ -36,6 +40,7 @@ where
     pub fn with_corpus(corpus: C) -> Self {
         let mut documents = DocumentRegistry::new();
         let mut postings: HashMap<Trigram, BTreeSet<DocId>> = HashMap::new();
+        let mut sparse_postings: HashMap<SparseNgram, BTreeSet<DocId>> = HashMap::new();
         let mut masks = RegexCandidateMask::default();
         let mut corpus_documents = corpus.documents();
         corpus_documents.sort_by(|left, right| left.path.cmp(&right.path));
@@ -44,6 +49,7 @@ where
             insert_document(
                 &mut documents,
                 &mut postings,
+                &mut sparse_postings,
                 &mut masks,
                 document.path.clone(),
                 &document.content,
@@ -55,6 +61,7 @@ where
         Self {
             corpus,
             postings,
+            sparse_postings,
             masks,
             documents,
             doc_ids_by_path,
@@ -88,6 +95,7 @@ where
             let doc_id = insert_document(
                 &mut self.documents,
                 &mut self.postings,
+                &mut self.sparse_postings,
                 &mut self.masks,
                 path.to_path_buf(),
                 &content,
@@ -114,6 +122,11 @@ where
             postings.remove(&metadata.id);
         }
         self.postings.retain(|_, postings| !postings.is_empty());
+        for postings in self.sparse_postings.values_mut() {
+            postings.remove(&metadata.id);
+        }
+        self.sparse_postings
+            .retain(|_, postings| !postings.is_empty());
         self.masks.remove_document(metadata.id);
         Some(metadata.id)
     }
@@ -145,6 +158,32 @@ where
     pub fn experimental_masked_candidates_for_literal(&self, literal: &str) -> BTreeSet<DocId> {
         let plain_candidates = self.candidates_for_literal(literal);
         self.masks.filter_literal(literal, &plain_candidates)
+    }
+
+    pub fn experimental_sparse_ngram_candidates_for_literal(
+        &self,
+        literal: &str,
+    ) -> BTreeSet<DocId> {
+        let query_ngrams = sparse_covering_ngrams(literal);
+        candidates_for_sparse_ngrams(&query_ngrams, &self.sparse_postings, &self.doc_ids_by_path)
+    }
+
+    pub fn experimental_sparse_ngram_comparison_for_literal(
+        &self,
+        literal: &str,
+    ) -> ExperimentalSparseNgramComparison {
+        ExperimentalSparseNgramComparison {
+            classic_candidate_count: self.candidates_for_literal(literal).len(),
+            sparse_candidate_count: self
+                .experimental_sparse_ngram_candidates_for_literal(literal)
+                .len(),
+            classic_posting_lookups: trigrams(literal).len(),
+            sparse_posting_lookups: sparse_covering_ngrams(literal).len(),
+            classic_index_key_count: self.postings.len(),
+            sparse_index_key_count: self.sparse_postings.len(),
+            classic_update_token_count: trigrams(literal).len(),
+            sparse_update_token_count: sparse_ngrams(literal).len(),
+        }
     }
 
     pub fn planned_candidates_for_regex(&self, pattern: &str) -> RegexCandidateSelection {
@@ -200,6 +239,7 @@ where
 fn insert_document(
     documents: &mut DocumentRegistry,
     postings: &mut HashMap<Trigram, BTreeSet<DocId>>,
+    sparse_postings: &mut HashMap<SparseNgram, BTreeSet<DocId>>,
     masks: &mut RegexCandidateMask,
     path: std::path::PathBuf,
     content: &str,
@@ -208,6 +248,9 @@ fn insert_document(
 
     for trigram in trigrams(content) {
         postings.entry(trigram).or_default().insert(doc_id);
+    }
+    for ngram in sparse_ngrams(content) {
+        sparse_postings.entry(ngram).or_default().insert(doc_id);
     }
     masks.add_document(doc_id, content);
 
@@ -236,6 +279,33 @@ pub fn trigrams(content: &str) -> Vec<Trigram> {
 
 fn trigram_count(content: &str) -> usize {
     content.chars().count().saturating_sub(2)
+}
+
+fn candidates_for_sparse_ngrams(
+    query_ngrams: &[SparseNgram],
+    postings: &HashMap<SparseNgram, BTreeSet<DocId>>,
+    all_doc_ids: &[DocId],
+) -> BTreeSet<DocId> {
+    let Some((first, rest)) = query_ngrams.split_first() else {
+        return all_doc_ids.iter().copied().collect();
+    };
+
+    let Some(first_postings) = postings.get(first) else {
+        return BTreeSet::new();
+    };
+
+    let mut candidates = first_postings.clone();
+    for ngram in rest {
+        let Some(next_postings) = postings.get(ngram) else {
+            return BTreeSet::new();
+        };
+        candidates = candidates
+            .intersection(next_postings)
+            .copied()
+            .collect::<BTreeSet<_>>();
+    }
+
+    candidates
 }
 
 fn is_plain_literal_plan(pattern: &str, plan: &RegexCandidatePlan) -> bool {
