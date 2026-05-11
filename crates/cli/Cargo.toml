@@ -3,6 +3,7 @@ name = "repo-reaper-cli"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+default-run = "repo-reaper-cli"
 
 [lints]
 workspace = true

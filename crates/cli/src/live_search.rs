@@ -22,7 +22,7 @@ use repo_reaper_core::{
         snapshot::{load_snapshot, write_snapshot},
     },
     query::{AnalyzedQuery, QueryExpansionConfig},
-    ranking::RankingAlgo,
+    ranking::{RankingAlgo, Scored},
     tokenizer::n_gram_transform,
 };
 
@@ -41,15 +41,74 @@ pub(crate) fn run(
     algo: RankingAlgo,
     options: LiveSearchOptions,
 ) -> Result<()> {
-    let config_clone = Arc::clone(&config);
-    let transformer = Arc::new(move |content: &str| n_gram_transform(content, &config_clone));
-    let path_clone = directory.clone();
+    let prepared = prepare_ranked_search(&directory, Arc::clone(&config), &algo, &options, true)?;
+    let transformer = build_transformer(Arc::clone(&config));
 
-    println!("Indexing files in {}", directory.display());
+    spawn_watcher(
+        directory,
+        prepared.engine.clone(),
+        transformer,
+        Arc::clone(&config),
+        prepared.fielded,
+        options.index_dir,
+    );
+    run_repl(
+        config,
+        algo,
+        options.top_n,
+        prepared.engine,
+        options.query_expansion,
+        options.feedback_expansion,
+    )
+}
+
+pub(crate) fn run_once(
+    directory: PathBuf,
+    config: Arc<ReaperConfig>,
+    algo: RankingAlgo,
+    options: LiveSearchOptions,
+    query: &str,
+) -> Result<()> {
+    let prepared = prepare_ranked_search(&directory, Arc::clone(&config), &algo, &options, false)?;
+    let analyzed_query = analyze_query(
+        &config,
+        &algo,
+        query,
+        options.query_expansion,
+        options.feedback_expansion,
+    );
+    let ranking = search_ranked(
+        &prepared.engine,
+        &algo,
+        &analyzed_query,
+        options.top_n,
+        options.feedback_expansion,
+    )?;
+    print_one_shot_results(&ranking);
+    Ok(())
+}
+
+struct PreparedRankedSearch {
+    engine: SearchEngine,
+    fielded: bool,
+}
+
+fn prepare_ranked_search(
+    directory: &PathBuf,
+    config: Arc<ReaperConfig>,
+    algo: &RankingAlgo,
+    options: &LiveSearchOptions,
+    verbose: bool,
+) -> Result<PreparedRankedSearch> {
+    let transformer = build_transformer(Arc::clone(&config));
+
+    if verbose {
+        println!("Indexing files in {}", directory.display());
+    }
 
     let fielded = algo.needs_fielded_index();
     let index = if let Some(index_dir) = options.index_dir.as_ref().filter(|_| !options.reindex) {
-        match load_snapshot(index_dir, &directory, &config) {
+        match load_snapshot(index_dir, directory, &config) {
             Ok(mut index) => {
                 let events = read_events(index_dir).context("failed to read index event log")?;
                 replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
@@ -58,7 +117,7 @@ pub(crate) fn run(
             Err(error) => {
                 eprintln!("rebuilding index because snapshot could not be loaded: {error}");
                 build_index(
-                    &directory,
+                    directory,
                     &config,
                     transformer.as_ref(),
                     fielded,
@@ -68,7 +127,7 @@ pub(crate) fn run(
         }
     } else {
         build_index(
-            &directory,
+            directory,
             &config,
             transformer.as_ref(),
             fielded,
@@ -80,31 +139,24 @@ pub(crate) fn run(
 
     if let Some(index_dir) = &options.index_dir {
         engine.with_read(|index| {
-            write_snapshot(index, index_dir, &directory, &config)?;
+            write_snapshot(index, index_dir, directory, &config)?;
             InvertedFileLayout::write(index, index_dir)?;
             clear_events(index_dir)?;
             Ok::<_, anyhow::Error>(())
         })??;
     }
 
-    println!("Successfully indexed {} files", engine.num_docs()?);
+    if verbose {
+        println!("Successfully indexed {} files", engine.num_docs()?);
+    }
 
-    spawn_watcher(
-        path_clone,
-        engine.clone(),
-        transformer,
-        Arc::clone(&config),
-        fielded,
-        options.index_dir,
-    );
-    run_repl(
-        config,
-        algo,
-        options.top_n,
-        engine,
-        options.query_expansion,
-        options.feedback_expansion,
-    )
+    Ok(PreparedRankedSearch { engine, fielded })
+}
+
+fn build_transformer(
+    config: Arc<ReaperConfig>,
+) -> Arc<impl Fn(&str) -> HashMap<repo_reaper_core::index::Term, u32> + Send + Sync + 'static> {
+    Arc::new(move |content: &str| n_gram_transform(content, &config))
 }
 
 fn build_index(
@@ -229,25 +281,8 @@ fn run_repl(
             break;
         }
 
-        let query = if algo.needs_fielded_index() {
-            AnalyzedQuery::new_code_search_with_expansion(
-                &query,
-                &config,
-                QueryExpansionConfig {
-                    controlled: query_expansion,
-                    feedback: feedback_expansion,
-                },
-            )
-        } else {
-            AnalyzedQuery::new(&query, &config)
-        };
-
-        let ranking = if feedback_expansion {
-            engine
-                .with_read(|index| algo.rank_with_feedback(index, &query, top_n, top_n.min(3), 6))?
-        } else {
-            engine.search(&algo, &query, top_n)?
-        };
+        let query = analyze_query(&config, &algo, &query, query_expansion, feedback_expansion);
+        let ranking = search_ranked(&engine, &algo, &query, top_n, feedback_expansion)?;
 
         log_query(&query, &ranking, &algo, top_n)?;
 
@@ -262,6 +297,53 @@ fn run_repl(
     }
 
     Ok(())
+}
+
+fn analyze_query(
+    config: &ReaperConfig,
+    algo: &RankingAlgo,
+    query: &str,
+    query_expansion: bool,
+    feedback_expansion: bool,
+) -> AnalyzedQuery {
+    if algo.needs_fielded_index() {
+        AnalyzedQuery::new_code_search_with_expansion(
+            query,
+            config,
+            QueryExpansionConfig {
+                controlled: query_expansion,
+                feedback: feedback_expansion,
+            },
+        )
+    } else {
+        AnalyzedQuery::new(query, config)
+    }
+}
+
+fn search_ranked(
+    engine: &SearchEngine,
+    algo: &RankingAlgo,
+    query: &AnalyzedQuery,
+    top_n: usize,
+    feedback_expansion: bool,
+) -> Result<Option<Scored>> {
+    if feedback_expansion {
+        Ok(engine
+            .with_read(|index| algo.rank_with_feedback(index, query, top_n, top_n.min(3), 6))?)
+    } else {
+        Ok(engine.search(algo, query, top_n)?)
+    }
+}
+
+fn print_one_shot_results(ranking: &Option<Scored>) {
+    match ranking {
+        Some(ranking) => {
+            for score in &ranking.0 {
+                println!("{}\tscore={:.6}", score.doc_path.display(), score.score);
+            }
+        }
+        None => println!("No results found"),
+    }
 }
 
 fn log_query(
