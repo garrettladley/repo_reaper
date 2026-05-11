@@ -1,9 +1,9 @@
 use std::{
     collections::HashMap,
     env,
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::{IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
 };
@@ -109,15 +109,27 @@ fn prepare_ranked_search(
     }
 
     let fielded = algo.needs_fielded_index();
+    let should_write_cache;
     let index = if let Some(index_dir) = options.index_dir.as_ref().filter(|_| !options.reindex) {
         let path = snapshot_path(index_dir);
         if path.exists() {
+            if verbose {
+                ui.status(
+                    "cache",
+                    &format!(
+                        "{} loading snapshot ({})",
+                        index_dir.display(),
+                        file_size_label(&path)
+                    ),
+                );
+            }
             match load_snapshot(index_dir, directory, &config) {
                 Ok(mut index) => {
                     let events =
                         read_events(index_dir).context("failed to read index event log")?;
                     let event_count = events.len();
                     replay_events(&mut index, &events, transformer.as_ref(), &config, fielded);
+                    should_write_cache = event_count > 0;
                     if verbose {
                         ui.status(
                             "cache",
@@ -135,6 +147,7 @@ fn prepare_ranked_search(
                     index
                 }
                 Err(error) => {
+                    should_write_cache = true;
                     if verbose {
                         ui.status(
                             "cache",
@@ -152,6 +165,7 @@ fn prepare_ranked_search(
                 }
             }
         } else {
+            should_write_cache = true;
             if verbose {
                 ui.status(
                     "cache",
@@ -167,6 +181,7 @@ fn prepare_ranked_search(
             )
         }
     } else {
+        should_write_cache = options.index_dir.is_some();
         if verbose && options.reindex {
             ui.status("cache", "reindex requested; rebuilding");
         }
@@ -182,13 +197,24 @@ fn prepare_ranked_search(
     let engine = SearchEngine::new(index);
     let document_count = engine.num_docs()?;
 
-    if let Some(index_dir) = &options.index_dir {
+    if let Some(index_dir) = &options.index_dir
+        && should_write_cache
+    {
+        if verbose {
+            ui.status(
+                "cache",
+                &format!("{} writing snapshot", index_dir.display()),
+            );
+        }
         engine.with_read(|index| {
             write_snapshot(index, index_dir, directory, &config)?;
             InvertedFileLayout::write(index, index_dir)?;
             clear_events(index_dir)?;
             Ok::<_, anyhow::Error>(())
         })??;
+        if verbose {
+            ui.status("cache", &format!("{} snapshot ready", index_dir.display()));
+        }
     }
 
     if verbose {
@@ -218,6 +244,25 @@ fn build_index(
         InvertedIndex::from_corpus_fielded(&corpus, config).index
     } else {
         InvertedIndex::from_corpus(&corpus, transformer).index
+    }
+}
+
+fn file_size_label(path: &Path) -> String {
+    fs::metadata(path)
+        .map(|metadata| human_bytes(metadata.len()))
+        .unwrap_or_else(|_| "unknown size".to_string())
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * 1024.0;
+    const GIB: f64 = MIB * 1024.0;
+
+    match bytes {
+        0..1024 => format!("{bytes} B"),
+        1024..1_048_576 => format!("{:.1} KiB", bytes as f64 / KIB),
+        1_048_576..1_073_741_824 => format!("{:.1} MiB", bytes as f64 / MIB),
+        _ => format!("{:.1} GiB", bytes as f64 / GIB),
     }
 }
 
@@ -533,4 +578,17 @@ fn log_query(
         .context("failed to write query log")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::human_bytes;
+
+    #[test]
+    fn human_bytes_formats_cache_sizes_for_status_lines() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(1536), "1.5 KiB");
+        assert_eq!(human_bytes(2 * 1024 * 1024), "2.0 MiB");
+        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0 GiB");
+    }
 }
