@@ -80,7 +80,41 @@ build:
 bench:
     cargo bench -p repo-reaper-core --bench search_bench
 
+# run the core Criterion benchmark harness under an external profiler
+[group("dev")]
+bench-profile:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/profiles
+    if command -v samply >/dev/null 2>&1; then
+        samply record --save-only -o target/profiles/search_bench.json -- cargo bench -p repo-reaper-core --bench search_bench
+    elif command -v cargo-flamegraph >/dev/null 2>&1; then
+        cargo flamegraph -o target/profiles/search_bench.svg --bench search_bench -p repo-reaper-core -- --bench
+    else
+        echo "install samply or cargo-flamegraph to capture benchmark profiles" >&2
+        echo "  cargo install samply" >&2
+        echo "  cargo install flamegraph" >&2
+        exit 1
+    fi
+
 # compare ranked IR search against regex candidate/search paths
 [group("dev")]
 bench-search-comparison *ARGS:
     cargo bench -p repo-reaper-core --bench search_bench -- search_comparison {{ARGS}}
+
+# compare search paths under an external profiler
+[group("dev")]
+bench-search-comparison-profile *ARGS:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/profiles
+    if command -v samply >/dev/null 2>&1; then
+        samply record --save-only -o target/profiles/search_comparison.json -- cargo bench -p repo-reaper-core --bench search_bench -- search_comparison {{ARGS}}
+    elif command -v cargo-flamegraph >/dev/null 2>&1; then
+        cargo flamegraph -o target/profiles/search_comparison.svg --bench search_bench -p repo-reaper-core -- search_comparison {{ARGS}}
+    else
+        echo "install samply or cargo-flamegraph to capture benchmark profiles" >&2
+        echo "  cargo install samply" >&2
+        echo "  cargo install flamegraph" >&2
+        exit 1
+    fi
