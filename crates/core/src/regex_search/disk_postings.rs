@@ -203,7 +203,9 @@ impl MmapRegexPostings {
             .ok_or(RegexPostingsError::InvalidFormat)?;
 
         bytes
-            .chunks_exact(DOC_ID_LEN)
+            .as_chunks::<DOC_ID_LEN>()
+            .0
+            .iter()
             .map(|chunk| read_u32(chunk).map(DocId::from_u32))
             .collect()
     }
